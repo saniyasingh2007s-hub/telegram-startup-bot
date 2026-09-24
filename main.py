@@ -85,10 +85,10 @@ Critique their answer concisely:
 """
 
 # -------------------------------------------------------------------
-# 3. Clean Gemini Generator Function (Only Active Models)
+# 3. Clean Gemini Generator Function (Strictly Free Flash Models)
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-    # Only use Flash models which have high free-tier quotas
+    # Strictly use Flash models available on the free tier
     models_to_try = [
         "gemini-2.5-flash",
         "gemini-1.5-flash"
@@ -106,10 +106,9 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
                 return response.text
         except Exception as e:
             last_error = e
-            # Continue loop on rate limit or model issues
             continue
 
-    raise Exception(f"Gemini API Quota/Rate Limit Error: {str(last_error)}")
+    raise Exception(f"Gemini API Error: {str(last_error)}")
 
 # -------------------------------------------------------------------
 # 4. Telegram UI & Handlers
