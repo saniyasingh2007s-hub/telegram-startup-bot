@@ -85,47 +85,43 @@ Critique their answer concisely:
 """
 
 # -------------------------------------------------------------------
-# 3. Dynamic Gemini Generator (Auto-Discovers Active Flash Models)
+# 3. Fail-proof Dynamic Generator (Fetches Live Active Catalog)
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-    # 1. Try recommended current production model targets first
-    preferred_models = ["gemini-3.6-flash", "gemini-2.5-flash"]
-    
-    for model in preferred_models:
+    last_error = None
+
+    # Step A: Query Google API to retrieve models actually live right now
+    try:
+        available_models = []
+        for m in ai_client.models.list():
+            model_id = m.name.replace("models/", "")
+            # Filter for generation-capable models
+            methods = getattr(m, "supported_generation_methods", []) or []
+            if "generateContent" in methods or not methods:
+                available_models.append(model_id)
+
+        # Prioritize flash/free models first
+        available_models.sort(key=lambda name: ("flash" not in name.lower(), name))
+
+    except Exception as list_err:
+        available_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
+        last_error = list_err
+
+    # Step B: Iterate through active live models until one returns content
+    for model in available_models:
         try:
             response = ai_client.models.generate_content(
                 model=model,
                 contents=prompt,
                 config={"system_instruction": system_instruction, "temperature": 0.7}
             )
-            if response.text:
+            if response and response.text:
                 return response.text
-        except Exception:
+        except Exception as e:
+            last_error = e
             continue
 
-    # 2. Dynamic Fallback: Query Google API for active generateContent models
-    try:
-        active_models = [
-            m.name.replace("models/", "") 
-            for m in ai_client.models.list() 
-            if "generateContent" in getattr(m, "supported_generation_methods", []) and "flash" in m.name.lower()
-        ]
-        
-        for model in active_models:
-            try:
-                response = ai_client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config={"system_instruction": system_instruction, "temperature": 0.7}
-                )
-                if response.text:
-                    return response.text
-            except Exception:
-                continue
-    except Exception as list_err:
-        raise Exception(f"Failed to fetch active models: {str(list_err)}")
-
-    raise Exception("No active Flash models currently available on your API key.")
+    raise Exception(f"Gemini API Engine Error: {str(last_error)}")
 
 # -------------------------------------------------------------------
 # 4. Telegram UI & Handlers
@@ -169,7 +165,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛠 Recommended MVP Tech Stack:\n"
             "• Backend: FastAPI / Python\n"
             "• DB: Supabase (PostgreSQL)\n"
-            "• Agent LLM Engine: Gemini Flash\n"
+            "• Agent LLM Engine: Gemini Engine\n"
             "• Distribution: Automated Cold Outreach"
         )
     elif query.data == "btn_new_idea":
@@ -182,7 +178,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data['last_idea'] = pitch_text
             await status_msg.delete()
-            await query.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
+            await update.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
         except Exception as e:
             await status_msg.delete()
             await update.message.reply_text(f"❌ {str(e)}")
@@ -195,7 +191,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("🧐 Agent evaluating execution plan...")
         try:
             prompt = STRESS_TEST_EVAL_PROMPT.format(idea_context=last_idea, user_answer=user_answer)
-            critique = await asyncio-to_thread(
+            critique = await asyncio.to_thread(
                 generate_gemini_content,
                 prompt=prompt,
                 system_instruction="You are a tough YC-style startup reviewer."
