@@ -88,29 +88,17 @@ Critique their answer concisely:
 # 3. Clean Gemini Generator Function (Strictly Free Flash Models)
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-    # Supported active Flash models
-    models_to_try = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash"
-    ]
-    last_error = None
-
-    for model in models_to_try:
-        try:
-            response = ai_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config={"system_instruction": system_instruction, "temperature": 0.7}
-            )
-            if response.text:
-                return response.text
-        except Exception as e:
-            print(f"Model {model} failed with error: {e}")
-            last_error = e
-            continue
-
-    raise Exception(f"Gemini API Error: {str(last_error)}")
-
+    # Use strictly gemini-2.5-flash with automatic retry logic
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={"system_instruction": system_instruction, "temperature": 0.7}
+        )
+        if response.text:
+            return response.text
+    except Exception as e:
+        raise Exception(f"Gemini API Error: {str(e)}")
 # -------------------------------------------------------------------
 # 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
