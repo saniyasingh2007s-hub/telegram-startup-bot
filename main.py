@@ -3,7 +3,6 @@ import time
 import asyncio
 import threading
 import requests
-from typing import List
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,7 +28,6 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# Start HTTP server on a background daemon thread
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # -------------------------------------------------------------------
@@ -86,54 +84,19 @@ Critique their answer concisely:
 """
 
 # -------------------------------------------------------------------
-# 3. Gemini Dynamic Engine with Failover & Retry Logic
+# 3. Rock-Solid Production Engine (Stable Models + Instant Fallback)
 # -------------------------------------------------------------------
 class GeminiAgentEngine:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.available_models: List[str] = []
-        self.active_model_index: int = 0
-        self.discover_models()
-
-    def discover_models(self) -> None:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
-        try:
-            res = requests.get(url, timeout=15)
-            if res.status_code == 200:
-                raw_models = res.json().get("models", [])
-                valid = []
-                for m in raw_models:
-                    name = m.get("name", "").replace("models/", "")
-                    methods = m.get("supportedGenerationMethods", [])
-                    if "generateContent" in methods and "tts" not in name and "image" not in name:
-                        valid.append(name)
-                
-                priority_order = [
-                    "gemini-2.5-flash",
-                    "gemini-2.5-pro",
-                    "gemini-3.6-flash",
-                    "gemini-3.5-flash",
-                    "gemini-flash-latest"
-                ]
-                sorted_models = [m for m in priority_order if m in valid]
-                sorted_models.extend([m for m in valid if m not in sorted_models])
-                
-                self.available_models = sorted_models if sorted_models else ["gemini-2.5-flash", "gemini-2.5-pro"]
-            else:
-                self.available_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
-        except Exception:
-            self.available_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+        # Strict fallback array targeting reliable, production-tier endpoints
+        self.models = ["gemini-1.5-flash", "gemini-1.5-pro"]
 
     def generate(self, prompt: str, system_instruction: str) -> str:
-        if not self.available_models:
-            self.discover_models()
-
-        attempts = 0
-        max_attempts = len(self.available_models) * 2  # Double pass for temporary hiccups
-
-        while attempts < max_attempts:
-            current_model = self.available_models[self.active_model_index]
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
+        last_error = ""
+        
+        for model in self.models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
             headers = {"Content-Type": "application/json"}
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
@@ -141,31 +104,28 @@ class GeminiAgentEngine:
                 "generationConfig": {"temperature": 0.7}
             }
 
-            try:
-                response = requests.post(url, headers=headers, json=payload, timeout=30)
-                res_data = response.json()
+            # Retry each model up to 2 times before failing over to the next
+            for attempt in range(2):
+                try:
+                    res = requests.post(url, headers=headers, json=payload, timeout=25)
+                    res_data = res.json()
 
-                if response.status_code == 200:
-                    return res_data["candidates"][0]["content"]["parts"][0]["text"]
-                elif response.status_code in (404, 429, 503):
-                    # Rotate to next model on quota, 503 demand spikes, or missing endpoints
-                    self.active_model_index = (self.active_model_index + 1) % len(self.available_models)
-                    attempts += 1
+                    if res.status_code == 200:
+                        return res_data["candidates"][0]["content"]["parts"][0]["text"]
+                    
+                    # Capture Google API error message
+                    last_error = res_data.get("error", {}).get("message", f"HTTP {res.status_code}")
+                    time.sleep(1) # Wait 1s before retry
+                except Exception as e:
+                    last_error = str(e)
                     time.sleep(1)
-                else:
-                    err_msg = res_data.get("error", {}).get("message", f"HTTP {response.status_code}")
-                    raise Exception(f"API Error ({response.status_code}): {err_msg}")
-            except requests.RequestException:
-                self.active_model_index = (self.active_model_index + 1) % len(self.available_models)
-                attempts += 1
-                time.sleep(1)
 
-        raise Exception("All Gemini models are experiencing high demand right now. Please try again in 30 seconds.")
+        raise Exception(f"Google API Error: {last_error}")
 
 agent_engine = GeminiAgentEngine(GEMINI_API_KEY)
 
 # -------------------------------------------------------------------
-# 4. Telegram UI & Handlers
+# 4. Telegram Handlers
 # -------------------------------------------------------------------
 def get_keyboard():
     return InlineKeyboardMarkup([
@@ -202,13 +162,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting_stress_reply'] = True
         await query.message.reply_text("🥊 Reply directly to this message with your solution to one of today's stress-test questions.")
     elif query.data == "btn_tech_stack":
-        active_model = agent_engine.available_models[agent_engine.active_model_index] if agent_engine.available_models else "gemini-2.5-flash"
         await query.message.reply_text(
-            f"🛠 Recommended MVP Tech Stack:\n"
-            f"• Backend: FastAPI / Python\n"
-            f"• DB: Supabase (PostgreSQL)\n"
-            f"• Agent LLM Engine: {active_model}\n"
-            f"• Distribution: Automated Cold Outreach"
+            "🛠 Recommended MVP Tech Stack:\n"
+            "• Backend: FastAPI / Python\n"
+            "• DB: Supabase (PostgreSQL)\n"
+            "• Agent LLM Engine: Gemini 1.5 Flash\n"
+            "• Distribution: Automated Cold Outreach"
         )
     elif query.data == "btn_new_idea":
         status_msg = await query.message.reply_text("🔄 Agent brainstorming fresh concept...")
