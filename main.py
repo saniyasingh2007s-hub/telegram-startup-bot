@@ -38,7 +38,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variable.")
 
-# Initialize official Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = """
@@ -86,10 +85,10 @@ Critique their answer concisely:
 """
 
 # -------------------------------------------------------------------
-# 3. Robust Gemini Generator Function with Fallbacks
+# 3. Clean Gemini Generator Function (Only Active Models)
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-    # Active valid Google models
+    # Only active, supported production model targets
     models_to_try = [
         "gemini-2.5-flash",
         "gemini-1.5-flash",
@@ -166,7 +165,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data['last_idea'] = pitch_text
             await status_msg.delete()
-            await query.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
+            await update.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
         except Exception as e:
             await status_msg.delete()
             await query.message.reply_text(f"❌ {str(e)}")
