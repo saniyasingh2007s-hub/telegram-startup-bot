@@ -1,9 +1,8 @@
 import os
-import time
 import asyncio
 import threading
-import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -38,6 +37,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variable.")
+
+# Initialize official Gemini Client
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = """
 You are an elite Startup Analyst & Co-Pilot for a CS student/founder. 
@@ -84,48 +86,29 @@ Critique their answer concisely:
 """
 
 # -------------------------------------------------------------------
-# 3. Rock-Solid Production Engine (Stable Models + Instant Fallback)
+# 3. Robust Gemini Generator Function with Fallbacks
 # -------------------------------------------------------------------
-class GeminiAgentEngine:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        # Strict fallback array targeting reliable, production-tier endpoints
-        self.models = ["gemini-1.5-flash", "gemini-1.5-pro"]
+def generate_gemini_content(prompt: str, system_instruction: str) -> str:
+    # Official SDK model targets
+    models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    last_error = None
 
-    def generate(self, prompt: str, system_instruction: str) -> str:
-        last_error = ""
-        
-        for model in self.models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-            headers = {"Content-Type": "application/json"}
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "systemInstruction": {"parts": [{"text": system_instruction}]},
-                "generationConfig": {"temperature": 0.7}
-            }
+    for model in models_to_try:
+        try:
+            response = ai_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={"system_instruction": system_instruction, "temperature": 0.7}
+            )
+            if response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
 
-            # Retry each model up to 2 times before failing over to the next
-            for attempt in range(2):
-                try:
-                    res = requests.post(url, headers=headers, json=payload, timeout=25)
-                    res_data = res.json()
-
-                    if res.status_code == 200:
-                        return res_data["candidates"][0]["content"]["parts"][0]["text"]
-                    
-                    # Capture Google API error message
-                    last_error = res_data.get("error", {}).get("message", f"HTTP {res.status_code}")
-                    time.sleep(1) # Wait 1s before retry
-                except Exception as e:
-                    last_error = str(e)
-                    time.sleep(1)
-
-        raise Exception(f"Google API Error: {last_error}")
-
-agent_engine = GeminiAgentEngine(GEMINI_API_KEY)
+    raise Exception(f"Gemini Engine Error: {str(last_error)}")
 
 # -------------------------------------------------------------------
-# 4. Telegram Handlers
+# 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
 def get_keyboard():
     return InlineKeyboardMarkup([
@@ -143,7 +126,7 @@ async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🤖 Agent scanning market gaps & compiling pitch...")
     try:
         pitch_text = await asyncio.to_thread(
-            agent_engine.generate,
+            generate_gemini_content,
             prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
             system_instruction=SYSTEM_PROMPT
         )
@@ -166,14 +149,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛠 Recommended MVP Tech Stack:\n"
             "• Backend: FastAPI / Python\n"
             "• DB: Supabase (PostgreSQL)\n"
-            "• Agent LLM Engine: Gemini 1.5 Flash\n"
+            "• Agent LLM Engine: Gemini 2.5 Flash\n"
             "• Distribution: Automated Cold Outreach"
         )
     elif query.data == "btn_new_idea":
         status_msg = await query.message.reply_text("🔄 Agent brainstorming fresh concept...")
         try:
             pitch_text = await asyncio.to_thread(
-                agent_engine.generate,
+                generate_gemini_content,
                 prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
                 system_instruction=SYSTEM_PROMPT
             )
@@ -193,7 +176,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = STRESS_TEST_EVAL_PROMPT.format(idea_context=last_idea, user_answer=user_answer)
             critique = await asyncio.to_thread(
-                agent_engine.generate,
+                generate_gemini_content,
                 prompt=prompt,
                 system_instruction="You are a tough YC-style startup reviewer."
             )
@@ -204,7 +187,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ {str(e)}")
 
 # -------------------------------------------------------------------
-# 5. Main Execution Entry Point
+# 5. Main Application Loop
 # -------------------------------------------------------------------
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
