@@ -1,9 +1,8 @@
 import os
-import asyncio
-import logging
-import nest_asyncio
+import threading
 import requests
 from typing import List
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -14,14 +13,27 @@ from telegram.ext import (
     filters,
 )
 
-nest_asyncio.apply()
+# Dummy HTTP Server to satisfy Render Free Web Service health checks
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is live and running!")
 
-# Read credentials safely from Environment Variables
+def run_health_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# Start HTTP server on a background thread so Render marks the service Healthy
+threading.Thread(target=run_health_server, daemon=True).start()
+
+# Load credentials from Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("Missing environment variables: TELEGRAM_BOT_TOKEN or GEMINI_API_KEY")
+    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variable")
 
 SYSTEM_PROMPT = """
 You are an elite Startup Analyst & Co-Pilot for a CS student/founder. 
@@ -132,9 +144,6 @@ class GeminiAgentEngine:
 
         raise Exception("All auto-discovered Gemini models failed or hit rate limits.")
 
-    async def async_generate(self, prompt: str, system_instruction: str) -> str:
-        return await asyncio.to_thread(self.generate, prompt, system_instruction)
-
 agent_engine = GeminiAgentEngine(GEMINI_API_KEY)
 
 def get_keyboard():
@@ -152,7 +161,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🤖 Agent scanning market gaps & compiling pitch...")
     try:
-        pitch_text = await agent_engine.async_generate(
+        pitch_text = agent_engine.generate(
             prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
             system_instruction=SYSTEM_PROMPT
         )
@@ -182,7 +191,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "btn_new_idea":
         status_msg = await query.message.reply_text("🔄 Agent brainstorming fresh concept...")
         try:
-            pitch_text = await agent_engine.async_generate(
+            pitch_text = agent_engine.generate(
                 prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
                 system_instruction=SYSTEM_PROMPT
             )
@@ -201,7 +210,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("🧐 Agent evaluating execution plan...")
         try:
             prompt = STRESS_TEST_EVAL_PROMPT.format(idea_context=last_idea, user_answer=user_answer)
-            critique = await agent_engine.async_generate(
+            critique = agent_engine.generate(
                 prompt=prompt,
                 system_instruction="You are a tough YC-style startup reviewer."
             )
@@ -211,17 +220,16 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.delete()
             await update.message.reply_text(f"❌ {str(e)}")
 
-async def main():
+def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("pitch", pitch_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_handler))
 
-    await app.initialize()
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    print("🚀 Bot initialized, listening for updates...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
