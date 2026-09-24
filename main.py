@@ -85,20 +85,48 @@ Critique their answer concisely:
 """
 
 # -------------------------------------------------------------------
-# 3. Clean Gemini Generator Function (Strictly Free Flash Models)
+# 3. Dynamic Gemini Generator (Auto-Discovers Active Flash Models)
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-    # Use strictly gemini-2.5-flash with automatic retry logic
+    # 1. Try recommended current production model targets first
+    preferred_models = ["gemini-3.6-flash", "gemini-2.5-flash"]
+    
+    for model in preferred_models:
+        try:
+            response = ai_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={"system_instruction": system_instruction, "temperature": 0.7}
+            )
+            if response.text:
+                return response.text
+        except Exception:
+            continue
+
+    # 2. Dynamic Fallback: Query Google API for active generateContent models
     try:
-        response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config={"system_instruction": system_instruction, "temperature": 0.7}
-        )
-        if response.text:
-            return response.text
-    except Exception as e:
-        raise Exception(f"Gemini API Error: {str(e)}")
+        active_models = [
+            m.name.replace("models/", "") 
+            for m in ai_client.models.list() 
+            if "generateContent" in getattr(m, "supported_generation_methods", []) and "flash" in m.name.lower()
+        ]
+        
+        for model in active_models:
+            try:
+                response = ai_client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={"system_instruction": system_instruction, "temperature": 0.7}
+                )
+                if response.text:
+                    return response.text
+            except Exception:
+                continue
+    except Exception as list_err:
+        raise Exception(f"Failed to fetch active models: {str(list_err)}")
+
+    raise Exception("No active Flash models currently available on your API key.")
+
 # -------------------------------------------------------------------
 # 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
@@ -141,7 +169,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛠 Recommended MVP Tech Stack:\n"
             "• Backend: FastAPI / Python\n"
             "• DB: Supabase (PostgreSQL)\n"
-            "• Agent LLM Engine: Gemini 2.5 Flash\n"
+            "• Agent LLM Engine: Gemini Flash\n"
             "• Distribution: Automated Cold Outreach"
         )
     elif query.data == "btn_new_idea":
@@ -154,10 +182,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data['last_idea'] = pitch_text
             await status_msg.delete()
-            await update.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
+            await query.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ {str(e)}")
+            await update.message.reply_text(f"❌ {str(e)}")
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_stress_reply'):
@@ -167,7 +195,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("🧐 Agent evaluating execution plan...")
         try:
             prompt = STRESS_TEST_EVAL_PROMPT.format(idea_context=last_idea, user_answer=user_answer)
-            critique = await asyncio.to_thread(
+            critique = await asyncio-to_thread(
                 generate_gemini_content,
                 prompt=prompt,
                 system_instruction="You are a tough YC-style startup reviewer."
