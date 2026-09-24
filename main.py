@@ -89,8 +89,8 @@ Critique their answer concisely:
 # 3. Robust Gemini Generator Function with Fallbacks
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-    # Official SDK model targets
-    models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    # Updated active model targets
+    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
     last_error = None
 
     for model in models_to_try:
