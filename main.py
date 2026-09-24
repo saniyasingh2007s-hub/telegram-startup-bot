@@ -88,10 +88,10 @@ Critique their answer concisely:
 # 3. Clean Gemini Generator Function (Strictly Free Flash Models)
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-    # Strictly use Flash models available on the free tier
+    # Supported active Flash models
     models_to_try = [
         "gemini-2.5-flash",
-        "gemini-1.5-flash"
+        "gemini-2.0-flash"
     ]
     last_error = None
 
@@ -105,6 +105,7 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
             if response.text:
                 return response.text
         except Exception as e:
+            print(f"Model {model} failed with error: {e}")
             last_error = e
             continue
 
