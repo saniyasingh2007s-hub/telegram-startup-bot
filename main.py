@@ -1,4 +1,6 @@
 import os
+import time
+import asyncio
 import threading
 import requests
 from typing import List
@@ -13,27 +15,31 @@ from telegram.ext import (
     filters,
 )
 
-# Dummy HTTP Server to satisfy Render Free Web Service health checks
+# -------------------------------------------------------------------
+# 1. Health-Check HTTP Server (Satisfies Render Free Web Service)
+# -------------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is live and running!")
+        self.wfile.write(b"Bot is active and running!")
 
 def run_health_server():
     port = int(os.getenv("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# Start HTTP server on a background thread so Render marks the service Healthy
+# Start HTTP server on a background daemon thread
 threading.Thread(target=run_health_server, daemon=True).start()
 
-# Load credentials from Environment Variables
+# -------------------------------------------------------------------
+# 2. Environment Setup & Prompts
+# -------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variable")
+    raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variable.")
 
 SYSTEM_PROMPT = """
 You are an elite Startup Analyst & Co-Pilot for a CS student/founder. 
@@ -79,6 +85,9 @@ Critique their answer concisely:
 3. Give 1 actionable improvement to refine their approach.
 """
 
+# -------------------------------------------------------------------
+# 3. Gemini Dynamic Engine with Failover & Retry Logic
+# -------------------------------------------------------------------
 class GeminiAgentEngine:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -99,11 +108,17 @@ class GeminiAgentEngine:
                     if "generateContent" in methods and "tts" not in name and "image" not in name:
                         valid.append(name)
                 
-                priority_order = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"]
+                priority_order = [
+                    "gemini-2.5-flash",
+                    "gemini-2.5-pro",
+                    "gemini-3.6-flash",
+                    "gemini-3.5-flash",
+                    "gemini-flash-latest"
+                ]
                 sorted_models = [m for m in priority_order if m in valid]
                 sorted_models.extend([m for m in valid if m not in sorted_models])
                 
-                self.available_models = sorted_models
+                self.available_models = sorted_models if sorted_models else ["gemini-2.5-flash", "gemini-2.5-pro"]
             else:
                 self.available_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
         except Exception:
@@ -114,7 +129,7 @@ class GeminiAgentEngine:
             self.discover_models()
 
         attempts = 0
-        max_attempts = len(self.available_models)
+        max_attempts = len(self.available_models) * 2  # Double pass for temporary hiccups
 
         while attempts < max_attempts:
             current_model = self.available_models[self.active_model_index]
@@ -132,20 +147,26 @@ class GeminiAgentEngine:
 
                 if response.status_code == 200:
                     return res_data["candidates"][0]["content"]["parts"][0]["text"]
-                elif response.status_code in (404, 429):
+                elif response.status_code in (404, 429, 503):
+                    # Rotate to next model on quota, 503 demand spikes, or missing endpoints
                     self.active_model_index = (self.active_model_index + 1) % len(self.available_models)
                     attempts += 1
+                    time.sleep(1)
                 else:
                     err_msg = res_data.get("error", {}).get("message", f"HTTP {response.status_code}")
                     raise Exception(f"API Error ({response.status_code}): {err_msg}")
             except requests.RequestException:
                 self.active_model_index = (self.active_model_index + 1) % len(self.available_models)
                 attempts += 1
+                time.sleep(1)
 
-        raise Exception("All auto-discovered Gemini models failed or hit rate limits.")
+        raise Exception("All Gemini models are experiencing high demand right now. Please try again in 30 seconds.")
 
 agent_engine = GeminiAgentEngine(GEMINI_API_KEY)
 
+# -------------------------------------------------------------------
+# 4. Telegram UI & Handlers
+# -------------------------------------------------------------------
 def get_keyboard():
     return InlineKeyboardMarkup([
         [
@@ -161,7 +182,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🤖 Agent scanning market gaps & compiling pitch...")
     try:
-        pitch_text = agent_engine.generate(
+        pitch_text = await asyncio.to_thread(
+            agent_engine.generate,
             prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
             system_instruction=SYSTEM_PROMPT
         )
@@ -180,7 +202,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting_stress_reply'] = True
         await query.message.reply_text("🥊 Reply directly to this message with your solution to one of today's stress-test questions.")
     elif query.data == "btn_tech_stack":
-        active_model = agent_engine.available_models[agent_engine.active_model_index]
+        active_model = agent_engine.available_models[agent_engine.active_model_index] if agent_engine.available_models else "gemini-2.5-flash"
         await query.message.reply_text(
             f"🛠 Recommended MVP Tech Stack:\n"
             f"• Backend: FastAPI / Python\n"
@@ -191,13 +213,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "btn_new_idea":
         status_msg = await query.message.reply_text("🔄 Agent brainstorming fresh concept...")
         try:
-            pitch_text = agent_engine.generate(
+            pitch_text = await asyncio.to_thread(
+                agent_engine.generate,
                 prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
                 system_instruction=SYSTEM_PROMPT
             )
             context.user_data['last_idea'] = pitch_text
             await status_msg.delete()
-            await update.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
+            await query.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
         except Exception as e:
             await status_msg.delete()
             await query.message.reply_text(f"❌ {str(e)}")
@@ -210,7 +233,8 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("🧐 Agent evaluating execution plan...")
         try:
             prompt = STRESS_TEST_EVAL_PROMPT.format(idea_context=last_idea, user_answer=user_answer)
-            critique = agent_engine.generate(
+            critique = await asyncio.to_thread(
+                agent_engine.generate,
                 prompt=prompt,
                 system_instruction="You are a tough YC-style startup reviewer."
             )
@@ -220,6 +244,9 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.delete()
             await update.message.reply_text(f"❌ {str(e)}")
 
+# -------------------------------------------------------------------
+# 5. Main Execution Entry Point
+# -------------------------------------------------------------------
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
