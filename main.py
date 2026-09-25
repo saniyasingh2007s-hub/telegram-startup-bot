@@ -325,21 +325,41 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 # 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
 def generate_grounded_search(prompt: str) -> str:
-    """Use Gemini's Google Search grounding to discover current public prospects."""
+    """Use Gemini models that support normal generateContent + Google Search grounding.
+
+    IMPORTANT: Gemini Live models (for example *-live-preview) only support
+    bidirectional WebSocket generation and must not be used with generate_content().
+    """
     last_error = None
+
+    # Prefer a known standard text model. Live-preview models are deliberately
+    # excluded because they cannot be called through generate_content().
+    preferred_models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+
     try:
-        available_models = []
+        listed = []
         for m in ai_client.models.list():
             model_id = m.name.replace("models/", "")
-            if "flash" in model_id.lower():
-                available_models.append(model_id)
-        if not available_models:
-            available_models = ["gemini-2.5-flash"]
-    except Exception as e:
-        available_models = ["gemini-2.5-flash"]
-        last_error = e
+            methods = getattr(m, "supported_generation_methods", []) or []
+            lower = model_id.lower()
+            if ("generatecontent" in [str(x).lower() for x in methods] or not methods) and \
+               "live" not in lower and "embedding" not in lower:
+                listed.append(model_id)
 
-    for model in available_models:
+        # Preserve the preferred order, then try other compatible models.
+        models_to_try = []
+        for model in preferred_models + listed:
+            if model not in models_to_try and "live" not in model.lower():
+                models_to_try.append(model)
+    except Exception as e:
+        last_error = e
+        models_to_try = preferred_models
+
+    for model in models_to_try:
         try:
             response = ai_client.models.generate_content(
                 model=model,
@@ -353,6 +373,10 @@ def generate_grounded_search(prompt: str) -> str:
                 return response.text
         except Exception as e:
             last_error = e
+            # If a model is unavailable or does not support grounding, move to
+            # the next standard text model instead of failing immediately.
+            continue
+
     raise Exception(f"Grounded search error: {str(last_error)}")
 
 async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
