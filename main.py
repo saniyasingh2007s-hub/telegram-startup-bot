@@ -36,7 +36,7 @@ threading.Thread(target=run_health_server, daemon=True).start()
 # -------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MY_TELEGRAM_CHAT_ID = os.getenv("MY_TELEGRAM_CHAT_ID")  # Your chat ID for 8 AM alerts
+MY_TELEGRAM_CHAT_ID = os.getenv("MY_TELEGRAM_CHAT_ID")
 
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variable.")
@@ -157,16 +157,15 @@ def get_keyboard():
             InlineKeyboardButton("🔄 Generate Another Idea", callback_data="btn_new_idea"),
         ]
     ])
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    print(f"=== YOUR TELEGRAM CHAT ID IS: {chat_id} ===")
     await update.message.reply_text(
         f"👋 Startup Co-Pilot active!\n\n"
         f"• Type /pitch to receive today's blueprint.\n"
         f"• Your Chat ID: `{chat_id}`",
         parse_mode="Markdown"
     )
-
 
 async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🤖 Agent scanning market gaps & compiling pitch...")
@@ -282,7 +281,6 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_handler))
 
-    # Schedule Daily 8:00 AM Pitch (Asia/Kolkata timezone)
     if MY_TELEGRAM_CHAT_ID:
         target_time = datetime.time(hour=8, minute=0, second=0, tzinfo=pytz.timezone("Asia/Kolkata"))
         app.job_queue.run_daily(scheduled_daily_pitch, time=target_time)
