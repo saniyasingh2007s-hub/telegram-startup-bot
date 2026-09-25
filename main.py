@@ -413,63 +413,130 @@ def _search_github(query: str):
 
 
 def hunt_public_web(topic: str) -> str:
-    """Find public prospects directly from public community APIs.
+    """Find SentinelFlow prospects using direct public searches only.
 
-    This deliberately does NOT call Gemini or Gemini Search Grounding.
-    Gemini can be used later for qualification/outreach when API quota is available.
+    Gemini Search Grounding is deliberately OFF. We search for concrete
+    automation failure/monitoring signals, not generic automation content.
     """
-    query = _clean_query(topic)
-    if not query:
-        query = "n8n automation silent workflow failure client"
-
-    searches = [
-        ("Reddit", _search_reddit),
-        ("Hacker News", _search_hackernews),
-        ("GitHub", _search_github),
+    # Ignore broad user wording and expand it into SentinelFlow-specific
+    # problem-intent searches.
+    problem_queries = [
+        "n8n failed workflow",
+        "n8n workflow stopped",
+        "n8n error client",
+        "n8n monitoring",
+        "n8n webhook failed",
+        "n8n client automation failed",
+        "n8n silent failure",
+        "Make scenario failed",
+        "Make.com automation error",
+        "Zapier automation failed client",
+        "client automation broke",
+        "automation silently failed",
+        "workflow ran but failed",
+        "missed leads automation",
+        "how to monitor client automations",
     ]
+
+    # Run a smaller set per source so we don't hammer public endpoints.
+    selected = problem_queries[:10]
     all_results = []
     source_errors = []
 
-    for name, fn in searches:
-        try:
-            all_results.extend(fn(query))
-        except Exception as e:
-            source_errors.append(f"{name}: {str(e)[:160]}")
+    for q in selected:
+        for name, fn in [
+            ("Reddit", _search_reddit),
+            ("Hacker News", _search_hackernews),
+            ("GitHub", _search_github),
+        ]:
+            try:
+                all_results.extend(fn(q))
+            except Exception as e:
+                if not any(name in x for x in source_errors):
+                    source_errors.append(f"{name}: {str(e)[:160]}")
 
-    # Prefer actual evidence-bearing discussions over empty profiles.
-    all_results = [r for r in all_results if r.get("url") and (r.get("evidence") or r.get("title"))]
-    all_results.sort(key=lambda r: (bool(r.get("evidence")), r.get("score", 0)), reverse=True)
+    automation_terms = [
+        "n8n", "make.com", "make ", "zapier", "webhook",
+        "workflow", "automation", "scenario"
+    ]
+    pain_terms = [
+        "failed", "failure", "error", "stopped", "broken", "broke",
+        "monitor", "monitoring", "silent", "not working", "down",
+        "missed lead", "missed", "alert", "incident", "retry"
+    ]
+    client_terms = [
+        "client", "customer", "agency", "production", "prod",
+        "client's", "customer's"
+    ]
+    bot_terms = ["github-actions[bot]", "[bot]", "digest", "newsletter"]
 
-    # Deduplicate by URL and keep a practical Telegram-sized batch.
+    def score_result(r):
+        blob = f"{r.get('title','')} {r.get('evidence','')}".lower()
+        automation = sum(1 for x in automation_terms if x in blob)
+        pain = sum(1 for x in pain_terms if x in blob)
+        client = sum(1 for x in client_terms if x in blob)
+        bot = any(x in blob or x in r.get("person", "").lower() for x in bot_terms)
+
+        if bot:
+            return "🔴 LOW", 0
+
+        # Strongest signal: automation + concrete failure/monitoring pain,
+        # preferably involving a client/customer/production workflow.
+        if automation >= 1 and pain >= 2 and client >= 1:
+            return "🔥 HIGH", 100 + pain * 10 + client * 5
+        if automation >= 1 and pain >= 2:
+            return "🔥 HIGH", 80 + pain * 10
+        if automation >= 1 and pain >= 1:
+            return "🟡 MEDIUM", 50 + pain * 10
+        return "🔴 LOW", 0
+
+    scored = []
     seen = set()
-    unique = []
     for r in all_results:
-        if r["url"] in seen:
+        url = r.get("url", "").strip()
+        if not url or url in seen:
             continue
-        seen.add(r["url"])
-        unique.append(r)
-        if len(unique) >= 8:
-            break
+        seen.add(url)
+
+        signal, score = score_result(r)
+        if signal == "🔴 LOW":
+            continue
+
+        r["signal"] = signal
+        r["signal_score"] = score
+        scored.append(r)
+
+    scored.sort(
+        key=lambda r: (r.get("signal_score", 0), r.get("score", 0)),
+        reverse=True
+    )
+    unique = scored[:10]
 
     if not unique:
-        detail = "\n".join(f"• {e}" for e in source_errors) if source_errors else "No matching public discussions found."
+        detail = "\n".join(f"• {e}" for e in source_errors) if source_errors else "No strong problem signals found."
         return (
-            f"🔎 HUNT RESULTS\n\nNo prospects found for: {query}\n\n"
-            f"Source status:\n{detail}\n\n"
-            "Try a narrower query such as: n8n client automation silent failure"
+            "🎯 SENTINELFLOW PROSPECT HUNT\n\n"
+            "No HIGH/MEDIUM problem signals found in the public sources.\n\n"
+            "Search focus:\n"
+            "• automation failures\n"
+            "• workflow monitoring\n"
+            "• webhook failures\n"
+            "• client automation problems\n\n"
+            f"Source status:\n{detail}"
         )
 
     lines = [
-        "🔎 HUNT RESULTS — DIRECT PUBLIC SEARCH",
+        "🎯 SENTINELFLOW PROSPECT HUNT — PROBLEM SIGNALS",
         "",
-        f"Query: {query}",
         "Gemini Search Grounding: OFF",
+        "Filter: actual automation + failure/monitoring signal",
         "",
     ]
+
     for i, r in enumerate(unique, 1):
-        evidence = r.get("evidence") or "No text excerpt available; inspect the post."
+        evidence = r.get("evidence") or "No excerpt available; inspect the post."
         lines.extend([
-            f"{i}. {r['person']} — {r['platform']}",
+            f"{i}. {r['signal']} — {r['person']} ({r['platform']})",
             f"POST: {r['title']}",
             f"EVIDENCE: {evidence}",
             f"URL: {r['url']}",
@@ -477,9 +544,13 @@ def hunt_public_web(topic: str) -> str:
             "",
         ])
 
-    lines.append("NEXT: Open the strongest 3 posts. Then use /outreach and paste the post text or URL for qualification.")
+    lines.append(
+        "NEXT: Open the strongest 3. Then use /outreach and paste the post/profile "
+        "text or URL. Do not pitch yet."
+    )
     if source_errors:
         lines.append("\nSource warnings: " + " | ".join(source_errors))
+
     return "\n".join(lines)
 
 def get_keyboard(status="🔴 UNVALIDATED"):
