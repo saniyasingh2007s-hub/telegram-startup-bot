@@ -32,7 +32,7 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # -------------------------------------------------------------------
-# 2. Environment Setup & Prompts
+# 2. Environment Setup & Prompts (V1 through V7)
 # -------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -170,6 +170,28 @@ Explain why based strictly on the user's notes (no wishful thinking).
 • Next Steps: 2 concrete actions for the next discovery round or pivot.
 """
 
+EXPERIMENT_PROMPT = """
+You are a Lean Startup Experiment Designer.
+Validated Opportunity:
+{idea_context}
+
+Discovery Evidence So Far:
+{user_findings}
+
+Design the absolute smallest concierge, manual, or zero-code experiment to test demand before building software:
+
+🧪 LOW-FIDELITY DEMAND EXPERIMENT
+
+1. The Concierge/Wizard-of-Oz Offer
+How can the founder deliver this outcome manually (e.g., using spreadsheets, manual processing, or a Google Form) to test if the customer actually cares?
+
+2. Success Metric
+What exact commitment proves demand? (e.g., "3 out of 5 targets send us 20 real files to process", or "Target agrees to a 14-day paid pilot").
+
+3. The 24-Hour Pitch / Landing Page Copy
+A 3-sentence headline and value proposition to send directly to interviewees.
+"""
+
 MVP_PROMPT = """
 You are a Technical Product Architect.
 Opportunity Context: {idea_context}
@@ -189,6 +211,30 @@ Simplest stack (FastAPI, Supabase, Flutter/Next.js, LLM) to deliver core value i
 • Day 1: Data Models & Core Trigger
 • Day 2: Primary Value Delivery Mechanics
 • Day 3: Output Interface & Pilot Access Link
+"""
+
+SALES_PROMPT = """
+You are a B2B Sales & Customer Acquisition Strategist.
+Opportunity Context:
+{idea_context}
+
+Validation & Experiment Results:
+{user_findings}
+
+Provide a closing strategy to secure your first paying customer:
+
+💼 FIRST CUSTOMER ACQUISITION ROADMAP
+
+1. Pre-Order / Paid Pilot Offer
+How to structure a risk-free paid pilot (e.g., 50% discount for design partners, money-back guarantee).
+
+2. Direct Outreach Email / Follow-up Script
+A tailored follow-up template for the targets who confirmed pain during your discovery calls.
+
+3. Handling Key Sales Objections
+• "We don't have budget for this right now."
+• "We need to check with IT / Security first."
+• "Can we try it for free for 3 months?"
 """
 
 # -------------------------------------------------------------------
@@ -228,22 +274,35 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 # 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
 def get_keyboard(status="🔴 UNVALIDATED"):
-    build_button_text = f"🛠️ Build MVP ({'LOCKED' if status in ['🔴 UNVALIDATED', '🟡 SIGNAL FOUND'] else 'UNLOCKED'})"
-    
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🎯 Validate Opportunity", callback_data="btn_validate"),
-            InlineKeyboardButton("👥 Find Customers", callback_data="btn_find_customers"),
-        ],
-        [
-            InlineKeyboardButton("📥 Enter Discovery Findings", callback_data="btn_enter_findings"),
-            InlineKeyboardButton("🥊 Challenge Idea", callback_data="btn_challenge"),
-        ],
-        [
-            InlineKeyboardButton(build_button_text, callback_data="btn_build_mvp"),
-            InlineKeyboardButton("🔄 Next Opportunity", callback_data="btn_next_opp"),
-        ]
-    ])
+    if status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎯 Validate Opportunity", callback_data="btn_validate"),
+                InlineKeyboardButton("👥 Find Customers", callback_data="btn_find_customers"),
+            ],
+            [
+                InlineKeyboardButton("📥 Enter Discovery Findings", callback_data="btn_enter_findings"),
+                InlineKeyboardButton("🥊 Challenge Idea", callback_data="btn_challenge"),
+            ],
+            [
+                InlineKeyboardButton("🧪 Design Experiment (V5)", callback_data="btn_experiment"),
+                InlineKeyboardButton("🔄 Next Opportunity", callback_data="btn_next_opp"),
+            ]
+        ])
+    else:  # 🟢 PROBLEM VALIDATED, 💰 PAYMENT SIGNAL, or 🛠️ BUILD MVP
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📥 Enter Discovery Findings", callback_data="btn_enter_findings"),
+                InlineKeyboardButton("🧪 Design Experiment (V5)", callback_data="btn_experiment"),
+            ],
+            [
+                InlineKeyboardButton("🛠️ Plan MVP Sprint (V6)", callback_data="btn_build_mvp"),
+                InlineKeyboardButton("💼 Sales & Conversion (V7)", callback_data="btn_sales"),
+            ],
+            [
+                InlineKeyboardButton("🔄 Next Opportunity", callback_data="btn_next_opp"),
+            ]
+        ])
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -354,6 +413,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.delete()
             await query.message.reply_text(f"❌ Error: {str(e)}")
 
+    elif query.data == "btn_experiment":
+        status_msg = await query.message.reply_text("🧪 Designing zero-code demand experiment...")
+        try:
+            user_findings = context.user_data.get('last_findings', 'No interview findings recorded yet.')
+            prompt = EXPERIMENT_PROMPT.format(idea_context=last_idea, user_findings=user_findings)
+            res = await asyncio.to_thread(
+                generate_gemini_content,
+                prompt=prompt,
+                system_instruction="You are a Lean Startup Experiment Designer."
+            )
+            await status_msg.delete()
+            await query.message.reply_text(text=res)
+        except Exception as e:
+            await status_msg.delete()
+            await query.message.reply_text(f"❌ Error: {str(e)}")
+
     elif query.data == "btn_build_mvp":
         if current_status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
             await query.message.reply_text(
@@ -370,6 +445,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 generate_gemini_content,
                 prompt=prompt,
                 system_instruction="You are a Technical Product Architect."
+            )
+            await status_msg.delete()
+            await query.message.reply_text(text=res)
+        except Exception as e:
+            await status_msg.delete()
+            await query.message.reply_text(f"❌ Error: {str(e)}")
+
+    elif query.data == "btn_sales":
+        if current_status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
+            await query.message.reply_text(
+                f"🛑 **SALES STRATEGY LOCKED (Current Status: {current_status})**\n\n"
+                "Validate the problem and conduct an experiment before crafting sales offers!"
+            )
+            return
+
+        status_msg = await query.message.reply_text("💼 Compiling customer acquisition & closing blueprint...")
+        try:
+            user_findings = context.user_data.get('last_findings', 'Customer validated problem and workflow pain.')
+            prompt = SALES_PROMPT.format(idea_context=last_idea, user_findings=user_findings)
+            res = await asyncio.to_thread(
+                generate_gemini_content,
+                prompt=prompt,
+                system_instruction="You are a B2B Sales Strategist."
             )
             await status_msg.delete()
             await query.message.reply_text(text=res)
@@ -397,6 +495,10 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_findings'):
         context.user_data['awaiting_findings'] = False
         user_findings = update.message.text
+        
+        # Store user interview notes for V5 & V7 prompts
+        context.user_data['last_findings'] = user_findings
+
         last_idea = context.user_data.get('last_idea', 'Market Opportunity Hypothesis')
         current_status = context.user_data.get('validation_status', '🔴 UNVALIDATED')
 
@@ -413,7 +515,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 system_instruction="You are a Truth-Seeking Startup Evaluator."
             )
             
-            # Auto-promote or update status based on key phrase presence in evaluation
+            # Auto-promote or update status based on key phrase presence
             new_status = current_status
             if "🟢 PROBLEM VALIDATED" in evaluation:
                 new_status = "🟢 PROBLEM VALIDATED"
@@ -435,7 +537,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await status_msg.delete()
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            await query.message.reply_text(f"❌ Error: {str(e)}")
 
 # -------------------------------------------------------------------
 # 5. Application Startup
