@@ -155,11 +155,13 @@ async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    # Immediately notify Telegram to dismiss the loading spinner on the button
     await query.answer()
 
     if query.data == "btn_stress_test":
         context.user_data['awaiting_stress_reply'] = True
         await query.message.reply_text("🥊 Reply directly to this message with your solution to one of today's stress-test questions.")
+
     elif query.data == "btn_tech_stack":
         await query.message.reply_text(
             "🛠 Recommended MVP Tech Stack:\n"
@@ -168,6 +170,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Agent LLM Engine: Gemini Engine\n"
             "• Distribution: Automated Cold Outreach"
         )
+
     elif query.data == "btn_new_idea":
         status_msg = await query.message.reply_text("🔄 Agent brainstorming fresh concept...")
         try:
@@ -178,10 +181,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data['last_idea'] = pitch_text
             await status_msg.delete()
-            await update.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
+            await query.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
         except Exception as e:
             await status_msg.delete()
-            await update.message.reply_text(f"❌ {str(e)}")
+            await query.message.reply_text(f"❌ {str(e)}")
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_stress_reply'):
@@ -201,7 +204,6 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await status_msg.delete()
             await update.message.reply_text(f"❌ {str(e)}")
-
 # -------------------------------------------------------------------
 # 5. Main Application Loop
 # -------------------------------------------------------------------
