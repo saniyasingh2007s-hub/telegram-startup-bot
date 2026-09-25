@@ -157,15 +157,16 @@ def get_keyboard():
             InlineKeyboardButton("🔄 Generate Another Idea", callback_data="btn_new_idea"),
         ]
     ])
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    print(f"=== YOUR TELEGRAM CHAT ID IS: {chat_id} ===")
     await update.message.reply_text(
         f"👋 Startup Co-Pilot active!\n\n"
         f"• Type /pitch to receive today's blueprint.\n"
-        f"• Your Chat ID is `{chat_id}` (save this in Render environment variables as `MY_TELEGRAM_CHAT_ID` for daily 8 AM pitches).",
+        f"• Your Chat ID: `{chat_id}`",
         parse_mode="Markdown"
     )
+
 
 async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🤖 Agent scanning market gaps & compiling pitch...")
