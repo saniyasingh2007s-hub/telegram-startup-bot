@@ -3,9 +3,12 @@ import asyncio
 import threading
 import datetime
 import pytz
+import json
+from urllib.parse import urlencode, quote_plus
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
-from google.genai import types
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -147,34 +150,7 @@ Return:
 ❓ FOLLOW-UP: One non-leading question if they respond.
 """
 
-HUNT_PROMPT = """
-You are a web research agent helping a founder validate ONE startup problem.
 
-Problem to validate:
-{topic}
-
-Use Google Search grounding to find REAL, public discussions from Reddit, X/Twitter, forums, blogs, GitHub issues, or public community pages where people appear to experience this problem.
-
-For this validation round, prioritize people who:
-- run AI/automation workflows for clients, or manage many production automations;
-- mention n8n, Make, Zapier, webhooks, client automations, monitoring, silent failures, missed leads, broken workflows, or similar issues;
-- describe an actual incident, workaround, frustration, or operational cost.
-
-Do NOT return generic articles, vendor marketing pages, or invented people.
-Do NOT recommend a solution.
-
-Return up to 8 prospects. For each:
-1. PERSON/USERNAME (if publicly shown)
-2. PLATFORM
-3. POST/TOPIC TITLE
-4. WHY RELEVANT (one sentence)
-5. EVIDENCE QUOTE (short, max 20 words)
-6. PUBLIC URL
-7. CONTACT METHOD: COMMENT / DM / UNKNOWN
-
-Finish with:
-🎯 NEXT ACTION: Which 3 prospects should be reviewed first, based only on relevance of their documented problem.
-"""
 
 CHALLENGE_PROMPT = """
 You are a Devil's Advocate Startup Investor. Your goal is to ruthlessly attack the assumptions in this hypothesis so the founder doesn't waste time on a non-problem.
@@ -303,7 +279,7 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 
         available_models.sort(key=lambda name: ("flash" not in name.lower(), name))
     except Exception as list_err:
-        available_models = ["gemini-3.8-flash"]
+        available_models = ["gemini-1.5-flash", "gemini-2.5-flash"]
         last_error = list_err
 
     for model in available_models:
@@ -324,29 +300,187 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 # -------------------------------------------------------------------
 # 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
-def generate_grounded_search(prompt: str) -> str:
-    """Run the Hunt using one fixed, standard text model.
+def _fetch_json(url: str, timeout: int = 12):
+    """Fetch a public JSON endpoint without using Gemini Search Grounding."""
+    req = Request(
+        url,
+        headers={
+            "User-Agent": "SentinelFlow-ProspectScout/1.0 (public research bot)"
+        },
+    )
+    with urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
-    Do not enumerate models here: the Gemini model list can contain Live
-    models that are incompatible with generate_content(). If this fixed
-    model cannot perform the requested grounded call, surface that error
-    instead of silently falling through to a Live model.
+
+def _clean_query(topic: str) -> str:
+    """Turn a free-form hunt topic into a compact search query."""
+    stop = {
+        "sentinelflow", "find", "people", "prospects", "public", "web",
+        "real", "actual", "problem", "startup", "project", "operators",
+        "who", "that", "experience", "experiencing", "looking", "for",
+        "the", "and", "or", "with", "from", "into", "this", "that",
+    }
+    words = []
+    for raw in topic.replace("/", " ").replace(",", " ").split():
+        w = raw.strip("'\"()[]{}:;.!?").lower()
+        if len(w) > 2 and w not in stop and w not in words:
+            words.append(w)
+    return " ".join(words[:12])
+
+
+def _search_reddit(query: str):
+    params = urlencode({
+        "q": query,
+        "sort": "new",
+        "t": "year",
+        "limit": "12",
+        "raw_json": "1",
+    })
+    url = f"https://www.reddit.com/search.json?{params}"
+    data = _fetch_json(url)
+    results = []
+    for child in data.get("data", {}).get("children", []):
+        d = child.get("data", {})
+        if not d.get("title") and not d.get("selftext"):
+            continue
+        author = d.get("author") or "[deleted]"
+        permalink = d.get("permalink")
+        if permalink and not permalink.startswith("http"):
+            permalink = "https://www.reddit.com" + permalink
+        results.append({
+            "person": f"u/{author}",
+            "platform": "Reddit",
+            "title": d.get("title", "Untitled"),
+            "evidence": (d.get("selftext") or "").replace("\n", " ").strip()[:280],
+            "url": permalink or d.get("url", ""),
+            "contact": "COMMENT / DM" if author != "[deleted]" else "UNKNOWN",
+            "score": d.get("score", 0),
+            "created": d.get("created_utc", 0),
+        })
+    return results
+
+
+def _search_hackernews(query: str):
+    params = urlencode({
+        "query": query,
+        "tags": "(story,comment)",
+        "hitsPerPage": "12",
+    })
+    url = f"https://hn.algolia.com/api/v1/search_by_date?{params}"
+    data = _fetch_json(url)
+    results = []
+    for hit in data.get("hits", []):
+        author = hit.get("author") or "[unknown]"
+        object_id = hit.get("objectID", "")
+        title = hit.get("title") or hit.get("story_title") or "Hacker News discussion"
+        text = hit.get("comment_text") or hit.get("story_text") or ""
+        text = " ".join(str(text).replace("<p>", " ").replace("</p>", " ").split())
+        url = hit.get("url") or (f"https://news.ycombinator.com/item?id={object_id}" if object_id else "")
+        results.append({
+            "person": f"@{author}",
+            "platform": "Hacker News",
+            "title": title,
+            "evidence": text[:280],
+            "url": url,
+            "contact": "PUBLIC PROFILE / COMMENT",
+            "score": hit.get("points") or 0,
+            "created": hit.get("created_at_i", 0),
+        })
+    return results
+
+
+def _search_github(query: str):
+    # GitHub's public search endpoint requires no token for small unauthenticated use.
+    q = f"{query} in:title,body is:issue"
+    params = urlencode({"q": q, "sort": "updated", "order": "desc", "per_page": "10"})
+    url = f"https://api.github.com/search/issues?{params}"
+    data = _fetch_json(url)
+    results = []
+    for item in data.get("items", []):
+        user = (item.get("user") or {}).get("login") or "[unknown]"
+        body = " ".join((item.get("body") or "").split())
+        results.append({
+            "person": f"@{user}",
+            "platform": "GitHub Issues",
+            "title": item.get("title", "GitHub issue"),
+            "evidence": body[:280],
+            "url": item.get("html_url", ""),
+            "contact": "ISSUE COMMENT / PROFILE",
+            "score": item.get("comments", 0),
+            "created": 0,
+        })
+    return results
+
+
+def hunt_public_web(topic: str) -> str:
+    """Find public prospects directly from public community APIs.
+
+    This deliberately does NOT call Gemini or Gemini Search Grounding.
+    Gemini can be used later for qualification/outreach when API quota is available.
     """
-    model = "gemini-3.8-flash"
-    try:
-        response = ai_client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            ),
+    query = _clean_query(topic)
+    if not query:
+        query = "n8n automation silent workflow failure client"
+
+    searches = [
+        ("Reddit", _search_reddit),
+        ("Hacker News", _search_hackernews),
+        ("GitHub", _search_github),
+    ]
+    all_results = []
+    source_errors = []
+
+    for name, fn in searches:
+        try:
+            all_results.extend(fn(query))
+        except Exception as e:
+            source_errors.append(f"{name}: {str(e)[:160]}")
+
+    # Prefer actual evidence-bearing discussions over empty profiles.
+    all_results = [r for r in all_results if r.get("url") and (r.get("evidence") or r.get("title"))]
+    all_results.sort(key=lambda r: (bool(r.get("evidence")), r.get("score", 0)), reverse=True)
+
+    # Deduplicate by URL and keep a practical Telegram-sized batch.
+    seen = set()
+    unique = []
+    for r in all_results:
+        if r["url"] in seen:
+            continue
+        seen.add(r["url"])
+        unique.append(r)
+        if len(unique) >= 8:
+            break
+
+    if not unique:
+        detail = "\n".join(f"• {e}" for e in source_errors) if source_errors else "No matching public discussions found."
+        return (
+            f"🔎 HUNT RESULTS\n\nNo prospects found for: {query}\n\n"
+            f"Source status:\n{detail}\n\n"
+            "Try a narrower query such as: n8n client automation silent failure"
         )
-        if response and response.text:
-            return response.text
-        raise Exception("Gemini returned an empty response.")
-    except Exception as e:
-        raise Exception(f"Grounded search error using {model}: {str(e)}")
+
+    lines = [
+        "🔎 HUNT RESULTS — DIRECT PUBLIC SEARCH",
+        "",
+        f"Query: {query}",
+        "Gemini Search Grounding: OFF",
+        "",
+    ]
+    for i, r in enumerate(unique, 1):
+        evidence = r.get("evidence") or "No text excerpt available; inspect the post."
+        lines.extend([
+            f"{i}. {r['person']} — {r['platform']}",
+            f"POST: {r['title']}",
+            f"EVIDENCE: {evidence}",
+            f"URL: {r['url']}",
+            f"CONTACT: {r['contact']}",
+            "",
+        ])
+
+    lines.append("NEXT: Open the strongest 3 posts. Then use /outreach and paste the post text or URL for qualification.")
+    if source_errors:
+        lines.append("\nSource warnings: " + " | ".join(source_errors))
+    return "\n".join(lines)
 
 def get_keyboard(status="🔴 UNVALIDATED"):
     if status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
@@ -484,39 +618,30 @@ async def outreach_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Find public prospects relevant to the validation problem."""
+    """Find public prospects without Gemini Search Grounding."""
     topic = " ".join(context.args).strip()
     if not topic:
-        # Keep the command useful even when no topic is supplied.
         topic = (
-            "SentinelFlow: AI automation agencies or operators managing client "
-            "n8n, Make, Zapier, webhook, or production workflows that experience "
-            "silent failures, missed leads, or workflows that appear successful "
-            "but fail in reality"
+            "SentinelFlow n8n Make Zapier client automation silent failures "
+            "missed leads broken workflows"
         )
 
     status_msg = await update.message.reply_text(
-        "🔎 Hunting for real public discussions and potential prospects...\n\n"
-        "This can take a little while."
+        "🔎 Hunting directly across public community sources...\n\n"
+        "Gemini Search Grounding is OFF for this step."
     )
 
-    prompt = HUNT_PROMPT.format(topic=topic)
-
     try:
-        result = await asyncio.to_thread(generate_grounded_search, prompt)
-
+        result = await asyncio.to_thread(hunt_public_web, topic)
         await status_msg.delete()
-        await update.message.reply_text(
-            f"🔎 **HUNT RESULTS**\n\n{result}\n\n"
-            "Next: use /outreach and paste any candidate post/profile you want me to qualify.",
-            parse_mode="Markdown"
-        )
+
+        # Telegram messages have a practical 4096-character limit.
+        chunks = [result[i:i + 3800] for i in range(0, len(result), 3800)]
+        for chunk in chunks:
+            await update.message.reply_text(chunk)
     except Exception as e:
         await status_msg.delete()
-        await update.message.reply_text(
-            f"❌ Hunt failed:\n`{str(e)}`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"❌ Hunt failed:\n{str(e)}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
