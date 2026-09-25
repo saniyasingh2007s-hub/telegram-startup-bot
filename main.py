@@ -303,7 +303,7 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 
         available_models.sort(key=lambda name: ("flash" not in name.lower(), name))
     except Exception as list_err:
-        available_models = ["gemini-1.5-flash", "gemini-2.5-flash"]
+        available_models = ["gemini-3.8-flash"]
         last_error = list_err
 
     for model in available_models:
