@@ -346,6 +346,63 @@ async def scheduled_daily_pitch(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Daily Scout Push Error: {e}")
 
+async def outreach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    last_idea = context.user_data.get('last_idea')
+    if not last_idea:
+        await update.message.reply_text(
+            "🛑 No active opportunity yet.\n\nUse /pitch first, then open 🎯 Outreach Assistant."
+        )
+        return
+
+    context.user_data['awaiting_candidate'] = True
+    await update.message.reply_text(
+        "🎯 **OUTREACH ASSISTANT**\n\n"
+        "Paste a Reddit/X post, comment, profile text, or candidate description here.\n\n"
+        "I'll tell you:\n"
+        "• whether they're relevant\n"
+        "• what evidence they gave\n"
+        "• what to comment\n"
+        "• what DM to send\n"
+        "• the best follow-up question\n\n"
+        "⚠️ I won't automatically send messages."
+    )
+
+async def outreach_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    candidate = update.message.text
+    last_idea = context.user_data.get('last_idea', 'Market Opportunity Hypothesis')
+
+    status_msg = await update.message.reply_text("🔎 Evaluating prospect...")
+    try:
+        prompt = OUTREACH_PROMPT.format(
+            idea_context=last_idea,
+            candidate=candidate
+        )
+        res = await asyncio.to_thread(
+            generate_gemini_content,
+            prompt=prompt,
+            system_instruction="You are an evidence-first customer discovery and outreach assistant."
+        )
+
+        # Keep a lightweight local outreach log in Telegram user state.
+        prospects = context.user_data.setdefault('outreach_prospects', [])
+        prospects.append({
+            "candidate": candidate,
+            "analysis": res,
+            "status": "prepared"
+        })
+        context.user_data['last_candidate'] = candidate
+        context.user_data['awaiting_candidate'] = False
+
+        await status_msg.delete()
+        await update.message.reply_text(
+            f"🎯 **PROSPECT ANALYSIS**\n\n{res}\n\n"
+            f"📌 Saved as prospect #{len(prospects)} in this Telegram session."
+        )
+    except Exception as e:
+        context.user_data['awaiting_candidate'] = False
+        await status_msg.delete()
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
@@ -357,7 +414,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_idea = context.user_data.get('last_idea', 'Market Opportunity Hypothesis')
     current_status = context.user_data.get('validation_status', '🔴 UNVALIDATED')
 
-    if query.data == "btn_validate":
+    if query.data == "btn_outreach":
+        if not last_idea:
+            await query.message.reply_text("🛑 Generate an opportunity first with /pitch.")
+            return
+        context.user_data['awaiting_candidate'] = True
+        await query.message.reply_text(
+            "🎯 **OUTREACH ASSISTANT**\n\n"
+            "Paste a Reddit/X post, comment, profile text, or candidate description.\n\n"
+            "I'll qualify it and create:\n"
+            "• a public comment\n"
+            "• a private research DM\n"
+            "• one follow-up question\n\n"
+            "⚠️ You approve and send the message yourself."
+        )
+
+    elif query.data == "btn_validate":
         status_msg = await query.message.reply_text("🎯 Architecting Unbiased Customer Discovery Plan...")
         try:
             prompt = VALIDATION_PROMPT.format(idea_context=last_idea, current_status=current_status)
@@ -370,7 +442,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=res)
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
     elif query.data == "btn_find_customers":
         status_msg = await query.message.reply_text("👥 Generating customer search strategy...")
@@ -385,7 +457,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=res)
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
     elif query.data == "btn_enter_findings":
         context.user_data['awaiting_findings'] = True
@@ -411,7 +483,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=res)
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
     elif query.data == "btn_experiment":
         status_msg = await query.message.reply_text("🧪 Designing zero-code demand experiment...")
@@ -427,7 +499,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=res)
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
     elif query.data == "btn_build_mvp":
         if current_status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
@@ -450,7 +522,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=res)
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
     elif query.data == "btn_sales":
         if current_status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
@@ -473,7 +545,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=res)
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
     elif query.data == "btn_next_opp":
         status_msg = await query.message.reply_text("🔄 Scouting next unvalidated opportunity hypothesis...")
@@ -489,7 +561,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=pitch_text, reply_markup=get_keyboard("🔴 UNVALIDATED"))
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_findings'):
@@ -537,7 +609,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
 # -------------------------------------------------------------------
 # 5. Application Startup
