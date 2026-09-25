@@ -332,7 +332,7 @@ def generate_grounded_search(prompt: str) -> str:
     model cannot perform the requested grounded call, surface that error
     instead of silently falling through to a Live model.
     """
-    model = "gemini-2.5-flash"
+    model = "gemini-3.8-flash"
     try:
         response = ai_client.models.generate_content(
             model=model,
