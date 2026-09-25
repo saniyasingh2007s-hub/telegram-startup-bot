@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 
 # -------------------------------------------------------------------
-# 1. Health-Check HTTP Server (Satisfies Render Free Web Service)
+# 1. Health-Check HTTP Server
 # -------------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -44,74 +44,80 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = """
-You are an elite Startup Analyst & Co-Pilot for a CS student/founder. 
-Generate a sharp, deeply analytical startup pitch.
+You are an visionary Venture Capitalist & Startup Founder.
+Your job is to discover massive, untapped gaps in the market and pitch completely novel startup ideas.
+
+DO NOT restrict ideas to developer tools, APIs, or website crashes. Rotate randomly across diverse categories:
+- Highly creative Consumer Apps (B2C) that have never been built before.
+- Blue Ocean opportunities solving real-world lifestyle, health, hardware, or social friction.
+- AI-native products for everyday non-technical users.
+- Niche vertical marketplaces and novel platform business models.
 
 Return your response following this exact structured format:
 
 🚀 DAILY STARTUP BLUEPRINT
 
-1. Story & Problem Context
-Write a 2-3 sentence realistic story illustrating a severe inefficiency or pain point in B2B/Dev/AI tools.
+### 1. Story & Problem Context
+Describe a relatable, real-world scenario showing a massive gap or frustration in consumer behavior or industry standard practice.
 
-2. Proposed Solution
-Describe the core micro-SaaS or AI agent solution and its main value proposition.
+### 2. Proposed Solution
+Detail the novel app, platform, or product concept that solves this gap. Explain why this specific approach has never succeeded or been tried before.
 
-3. DOA Scorecard (1-10)
+### 3. DOA Scorecard (1-10)
 • Pain Intensity: X/10
 • Willingness to Pay: X/10
 • Distribution Ease: X/10
 • Technical Feasibility: X/10
 
-4. Competitor Matrix & Moat
-• Incumbents: Names
-• Where They Fail: Key weakness
-• Your Moat: Why a solo builder can win
+### 4. Competitor Matrix & Moat
+• Existing Substitutes: How people cope today
+• Why Big Players Miss This: Why incumbents won't build this
+• Your Moat: Core unfair advantage or network effect
 
-5. First 100 Clients (GTM)
-Actionable, non-paid strategy to acquire first customers.
+### 5. First 100 Clients / Users (GTM)
+A creative, zero-budget growth hack to acquire initial users.
 
-6. Daily Stress-Test Questions
-1. A hard tactical question about edge cases or execution.
-2. A hard question about user acquisition or defensibility.
+### 6. Daily Stress-Test Questions
+1. A tactical hurdle regarding user habit adoption or retention.
+2. A defensibility question about competition or economics.
 """
 
 IMPLEMENTATION_PROMPT = """
-You are a Principal Software Architect helping a solo developer build an MVP.
-Idea: {idea_context}
+You are a Principal Technical Architect helping a founder build an MVP.
+Idea Context: {idea_context}
 
-Provide a concrete, actionable implementation blueprint following this exact structure:
+Provide a concrete implementation plan for this idea:
 
 🏗️ MVP IMPLEMENTATION BLUEPRINT
 
-1. Project Folder Structure
-Show a clean text directory layout (e.g., app/api, app/services, app/models).
+1. Key System Architecture & Flow
+Explain how the app works from user trigger to core value delivery.
 
-2. Database Schema (PostgreSQL/Supabase)
-Provide the core SQL tables and fields needed to store essential state.
+2. Core Data Requirements
+What primary entities, user profiles, or data models need to be stored?
 
-3. Primary API Endpoints
-List 3-4 essential REST/GraphQL endpoints (HTTP Method, Route, Purpose).
+3. Essential MVP Features (V1)
+List the absolute minimum 3-4 features needed for launch.
 
 4. 3-Day Build Sprint Plan
-• Day 1: Core Backend & Data Models
-• Day 2: LLM Agent Integration / Third-Party Services
-• Day 3: Frontend Interface & MVP Deployment
+• Day 1: Core Mechanics & Prototype Interface
+• Day 2: Primary Logic & Integration
+• Day 3: User Onboarding & Launch Readiness
 """
 
 STRESS_TEST_EVAL_PROMPT = """
-You are a tough YC-style startup reviewer evaluating a founder's answer to a stress-test challenge.
-Original Idea: {idea_context}
-Founder's Answer: {user_answer}
+You are a YC-style startup partner evaluating a founder's solution.
+Startup Idea: {idea_context}
+Founder's Solution: {user_answer}
 
-Critique their answer concisely:
-1. What is strong about their plan?
-2. What edge case or risk are they missing?
-3. Give 1 actionable improvement to refine their approach.
+Provide a quick critique:
+1. What is strong about their approach?
+2. What key flaw or user friction are they underestimating?
+3. What is 1 actionable pivot to make it stronger?
 """
 
 # -------------------------------------------------------------------
-# 3. Dynamic Gemini Generator
+# 3. Resilient Dynamic Gemini Generator
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
     last_error = None
@@ -133,7 +139,7 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
             response = ai_client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config={"system_instruction": system_instruction, "temperature": 0.7}
+                config={"system_instruction": system_instruction, "temperature": 0.85}
             )
             if response and response.text:
                 return response.text
@@ -141,10 +147,10 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
             last_error = e
             continue
 
-    raise Exception(f"Gemini API Engine Error: {str(last_error)}")
+    raise Exception(f"Gemini Engine Error: {str(last_error)}")
 
 # -------------------------------------------------------------------
-# 4. Telegram UI & Handlers
+# 4. Telegram Handlers
 # -------------------------------------------------------------------
 def get_keyboard():
     return InlineKeyboardMarkup([
@@ -161,18 +167,18 @@ def get_keyboard():
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
-        f"👋 Startup Co-Pilot active!\n\n"
-        f"• Type /pitch to receive today's blueprint.\n"
-        f"• Your Chat ID: `{chat_id}`",
+        f"👋 Startup Co-Pilot Active!\n\n"
+        f"• Type /pitch to get a novel startup blueprint.\n"
+        f"• Chat ID: `{chat_id}`",
         parse_mode="Markdown"
     )
 
 async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("🤖 Agent scanning market gaps & compiling pitch...")
+    status_msg = await update.message.reply_text("🤖 Scanning market gaps & crafting novel pitch...")
     try:
         pitch_text = await asyncio.to_thread(
             generate_gemini_content,
-            prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
+            prompt="Generate a novel, high-potential startup blueprint across consumer apps, untapped market gaps, or innovative platforms.",
             system_instruction=SYSTEM_PROMPT
         )
         context.user_data['last_idea'] = pitch_text
@@ -180,7 +186,7 @@ async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
     except Exception as e:
         await status_msg.delete()
-        await update.message.reply_text(f"❌ {str(e)}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def scheduled_daily_pitch(context: ContextTypes.DEFAULT_TYPE):
     if not MY_TELEGRAM_CHAT_ID:
@@ -188,20 +194,21 @@ async def scheduled_daily_pitch(context: ContextTypes.DEFAULT_TYPE):
     try:
         pitch_text = await asyncio.to_thread(
             generate_gemini_content,
-            prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
+            prompt="Generate a novel, high-potential startup blueprint across consumer apps, untapped market gaps, or innovative platforms.",
             system_instruction=SYSTEM_PROMPT
         )
         await context.bot.send_message(
             chat_id=MY_TELEGRAM_CHAT_ID,
-            text=f"☀️ **GOOD MORNING! TODAY'S STARTUP BLUEPRINT**\n\n{pitch_text}",
-            reply_markup=get_keyboard(),
-            parse_mode="Markdown"
+            text=f"☀️ **MORNING MARKET GAP & STARTUP IDEA**\n\n{pitch_text}",
+            reply_markup=get_keyboard()
         )
     except Exception as e:
-        print(f"Daily Pitch Error: {e}")
+        print(f"Daily Push Error: {e}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    
+    # Always acknowledge the callback query immediately so Telegram buttons do not freeze
     try:
         await query.answer()
     except Exception:
@@ -213,16 +220,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "btn_tech_stack":
         await query.message.reply_text(
-            "🛠 Recommended MVP Tech Stack:\n"
-            "• Backend: FastAPI / Python\n"
-            "• DB: Supabase (PostgreSQL)\n"
-            "• Agent LLM Engine: Gemini Engine\n"
-            "• Distribution: Automated Cold Outreach"
+            "🛠 Recommended Tech Stack Options:\n\n"
+            "• Mobile/Consumer: React Native / Flutter + Supabase\n"
+            "• Web Platform: Next.js + Tailwind + PostgreSQL\n"
+            "• AI Engine: Gemini API / OpenAI\n"
+            "• Analytics & Growth: PostHog + Mixpanel"
         )
 
     elif query.data == "btn_implement":
-        last_idea = context.user_data.get('last_idea', 'Recent Startup Idea')
-        status_msg = await query.message.reply_text("⚙️ Architecting MVP implementation blueprint...")
+        last_idea = context.user_data.get('last_idea', 'Recent Startup Concept')
+        status_msg = await query.message.reply_text("⚙️ Generating MVP implementation roadmap...")
         try:
             prompt = IMPLEMENTATION_PROMPT.format(idea_context=last_idea)
             plan = await asyncio.to_thread(
@@ -234,14 +241,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=plan)
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ {str(e)}")
+            await query.message.reply_text(f"❌ Error: {str(e)}")
 
     elif query.data == "btn_new_idea":
-        status_msg = await query.message.reply_text("🔄 Agent brainstorming fresh concept...")
+        status_msg = await query.message.reply_text("🔄 Exploring fresh consumer gaps & novel apps...")
         try:
             pitch_text = await asyncio.to_thread(
                 generate_gemini_content,
-                prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
+                prompt="Generate a novel, high-potential startup blueprint across consumer apps, untapped market gaps, or innovative platforms.",
                 system_instruction=SYSTEM_PROMPT
             )
             context.user_data['last_idea'] = pitch_text
@@ -249,29 +256,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text=pitch_text, reply_markup=get_keyboard())
         except Exception as e:
             await status_msg.delete()
-            await query.message.reply_text(f"❌ {str(e)}")
+            await query.message.reply_text(f"❌ Error: {str(e)}")
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_stress_reply'):
         context.user_data['awaiting_stress_reply'] = False
         user_answer = update.message.text
         last_idea = context.user_data.get('last_idea', 'Startup Pitch')
-        status_msg = await update.message.reply_text("🧐 Agent evaluating execution plan...")
+        status_msg = await update.message.reply_text("🧐 Analyzing your execution plan...")
         try:
             prompt = STRESS_TEST_EVAL_PROMPT.format(idea_context=last_idea, user_answer=user_answer)
             critique = await asyncio.to_thread(
                 generate_gemini_content,
                 prompt=prompt,
-                system_instruction="You are a tough YC-style startup reviewer."
+                system_instruction="You are a tough YC startup reviewer."
             )
             await status_msg.delete()
             await update.message.reply_text(f"📋 CRITIQUE:\n\n{critique}")
         except Exception as e:
             await status_msg.delete()
-            await update.message.reply_text(f"❌ {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
 # -------------------------------------------------------------------
-# 5. Main Application Loop & Scheduler
+# 5. Application Startup
 # -------------------------------------------------------------------
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -285,7 +292,7 @@ def main():
         target_time = datetime.time(hour=8, minute=0, second=0, tzinfo=pytz.timezone("Asia/Kolkata"))
         app.job_queue.run_daily(scheduled_daily_pitch, time=target_time)
 
-    print("🚀 Bot initialized, listening for updates...")
+    print("🚀 Bot running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
