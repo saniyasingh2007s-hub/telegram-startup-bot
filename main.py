@@ -5,6 +5,7 @@ import datetime
 import pytz
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
+from google.genai import types
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -123,6 +124,56 @@ Specific subreddits, Slack/Discord groups, forums, or platforms where this targe
 
 3. UNBIASED OUTREACH SCRIPT
 A non-pitch, research-focused cold outreach message asking for 10 minutes of feedback on their workflow.
+"""
+
+OUTREACH_PROMPT = """
+You are an evidence-first customer discovery outreach assistant.
+
+Startup/problem we are validating:
+{idea_context}
+
+Candidate/post/profile:
+{candidate}
+
+Analyze ONLY what is actually present in the candidate text.
+Do not invent facts.
+
+Return:
+🎯 RELEVANCE: HIGH / MEDIUM / LOW
+🔎 EVIDENCE: 1-3 concrete reasons from the candidate text.
+⚠️ UNKNOWN: What we still don't know.
+💬 PUBLIC COMMENT: A short, natural research comment. Do not pitch a product.
+📩 RESEARCH DM: A short message asking about their real experience. Do not claim we have a product.
+❓ FOLLOW-UP: One non-leading question if they respond.
+"""
+
+HUNT_PROMPT = """
+You are a web research agent helping a founder validate ONE startup problem.
+
+Problem to validate:
+{topic}
+
+Use Google Search grounding to find REAL, public discussions from Reddit, X/Twitter, forums, blogs, GitHub issues, or public community pages where people appear to experience this problem.
+
+For this validation round, prioritize people who:
+- run AI/automation workflows for clients, or manage many production automations;
+- mention n8n, Make, Zapier, webhooks, client automations, monitoring, silent failures, missed leads, broken workflows, or similar issues;
+- describe an actual incident, workaround, frustration, or operational cost.
+
+Do NOT return generic articles, vendor marketing pages, or invented people.
+Do NOT recommend a solution.
+
+Return up to 8 prospects. For each:
+1. PERSON/USERNAME (if publicly shown)
+2. PLATFORM
+3. POST/TOPIC TITLE
+4. WHY RELEVANT (one sentence)
+5. EVIDENCE QUOTE (short, max 20 words)
+6. PUBLIC URL
+7. CONTACT METHOD: COMMENT / DM / UNKNOWN
+
+Finish with:
+🎯 NEXT ACTION: Which 3 prospects should be reviewed first, based only on relevance of their documented problem.
 """
 
 CHALLENGE_PROMPT = """
@@ -273,12 +324,70 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 # -------------------------------------------------------------------
 # 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
+def generate_grounded_search(prompt: str) -> str:
+    """Use Gemini's Google Search grounding to discover current public prospects."""
+    last_error = None
+    try:
+        available_models = []
+        for m in ai_client.models.list():
+            model_id = m.name.replace("models/", "")
+            if "flash" in model_id.lower():
+                available_models.append(model_id)
+        if not available_models:
+            available_models = ["gemini-2.5-flash"]
+    except Exception as e:
+        available_models = ["gemini-2.5-flash"]
+        last_error = e
+
+    for model in available_models:
+        try:
+            response = ai_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
+    raise Exception(f"Grounded search error: {str(last_error)}")
+
+async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    topic = " ".join(context.args).strip() if context.args else "" 
+    if not topic:
+        topic = "SentinelFlow: silent failures in client AI automation workflows — workflows appear successful/green but the intended business outcome fails or nobody notices until the client reports it."
+
+    status_msg = await update.message.reply_text(
+        "🔎 **HUNTING FOR REAL PROSPECTS...**\\n\\n"
+        "Searching public discussions for people who actually experience this problem.\\n"
+        "This may take a moment..."
+    )
+    try:
+        prompt = HUNT_PROMPT.format(topic=topic)
+        results = await asyncio.to_thread(generate_grounded_search, prompt)
+        context.user_data['last_hunt'] = results
+        await status_msg.delete()
+        await update.message.reply_text(
+            "🔥 **PROSPECT HUNT RESULTS**\\n\\n" + results +
+            "\\n\\n📌 Paste any prospect/post here, or use /outreach to qualify and personalize it."
+        )
+    except Exception as e:
+        await status_msg.delete()
+        await update.message.reply_text(f"❌ Hunt error: {str(e)}")
+
 def get_keyboard(status="🔴 UNVALIDATED"):
     if status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🎯 Validate Opportunity", callback_data="btn_validate"),
                 InlineKeyboardButton("👥 Find Customers", callback_data="btn_find_customers"),
+            ],
+            [
+                InlineKeyboardButton("🔎 Hunt Prospects", callback_data="btn_hunt"),
+                InlineKeyboardButton("💬 Outreach Assistant", callback_data="btn_outreach"),
             ],
             [
                 InlineKeyboardButton("📥 Enter Discovery Findings", callback_data="btn_enter_findings"),
@@ -414,7 +523,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_idea = context.user_data.get('last_idea', 'Market Opportunity Hypothesis')
     current_status = context.user_data.get('validation_status', '🔴 UNVALIDATED')
 
-    if query.data == "btn_outreach":
+    if query.data == "btn_hunt":
+        await query.message.reply_text(
+            "🔎 **SENTINELFLOW PROSPECT HUNT**\n\n"
+            "Use /hunt to search the public web for real automation operators discussing silent failures.\n\n"
+            "Example:\n`/hunt n8n client workflow silent failure`"
+        )
+
+    elif query.data == "btn_outreach":
         if not last_idea:
             await query.message.reply_text("🛑 Generate an opportunity first with /pitch.")
             return
@@ -619,6 +735,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("pitch", pitch_command))
+    app.add_handler(CommandHandler("hunt", hunt_command))
+    app.add_handler(CommandHandler("outreach", outreach_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_handler))
 
