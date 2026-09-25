@@ -325,82 +325,28 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 # 4. Telegram UI & Handlers
 # -------------------------------------------------------------------
 def generate_grounded_search(prompt: str) -> str:
-    """Use Gemini models that support normal generateContent + Google Search grounding.
+    """Run the Hunt using one fixed, standard text model.
 
-    IMPORTANT: Gemini Live models (for example *-live-preview) only support
-    bidirectional WebSocket generation and must not be used with generate_content().
+    Do not enumerate models here: the Gemini model list can contain Live
+    models that are incompatible with generate_content(). If this fixed
+    model cannot perform the requested grounded call, surface that error
+    instead of silently falling through to a Live model.
     """
-    last_error = None
-
-    # Prefer a known standard text model. Live-preview models are deliberately
-    # excluded because they cannot be called through generate_content().
-    preferred_models = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-    ]
-
+    model = "gemini-2.5-flash"
     try:
-        listed = []
-        for m in ai_client.models.list():
-            model_id = m.name.replace("models/", "")
-            methods = getattr(m, "supported_generation_methods", []) or []
-            lower = model_id.lower()
-            if ("generatecontent" in [str(x).lower() for x in methods] or not methods) and \
-               "live" not in lower and "embedding" not in lower:
-                listed.append(model_id)
-
-        # Preserve the preferred order, then try other compatible models.
-        models_to_try = []
-        for model in preferred_models + listed:
-            if model not in models_to_try and "live" not in model.lower():
-                models_to_try.append(model)
-    except Exception as e:
-        last_error = e
-        models_to_try = preferred_models
-
-    for model in models_to_try:
-        try:
-            response = ai_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                ),
-            )
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            last_error = e
-            # If a model is unavailable or does not support grounding, move to
-            # the next standard text model instead of failing immediately.
-            continue
-
-    raise Exception(f"Grounded search error: {str(last_error)}")
-
-async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    topic = " ".join(context.args).strip() if context.args else "" 
-    if not topic:
-        topic = "SentinelFlow: silent failures in client AI automation workflows — workflows appear successful/green but the intended business outcome fails or nobody notices until the client reports it."
-
-    status_msg = await update.message.reply_text(
-        "🔎 **HUNTING FOR REAL PROSPECTS...**\\n\\n"
-        "Searching public discussions for people who actually experience this problem.\\n"
-        "This may take a moment..."
-    )
-    try:
-        prompt = HUNT_PROMPT.format(topic=topic)
-        results = await asyncio.to_thread(generate_grounded_search, prompt)
-        context.user_data['last_hunt'] = results
-        await status_msg.delete()
-        await update.message.reply_text(
-            "🔥 **PROSPECT HUNT RESULTS**\\n\\n" + results +
-            "\\n\\n📌 Paste any prospect/post here, or use /outreach to qualify and personalize it."
+        response = ai_client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
         )
+        if response and response.text:
+            return response.text
+        raise Exception("Gemini returned an empty response.")
     except Exception as e:
-        await status_msg.delete()
-        await update.message.reply_text(f"❌ Hunt error: {str(e)}")
+        raise Exception(f"Grounded search error using {model}: {str(e)}")
 
 def get_keyboard(status="🔴 UNVALIDATED"):
     if status in ["🔴 UNVALIDATED", "🟡 SIGNAL FOUND"]:
