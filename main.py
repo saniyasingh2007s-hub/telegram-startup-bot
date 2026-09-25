@@ -482,6 +482,42 @@ async def outreach_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.delete()
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
+
+async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Find public prospects relevant to the validation problem."""
+    topic = " ".join(context.args).strip()
+    if not topic:
+        # Keep the command useful even when no topic is supplied.
+        topic = (
+            "SentinelFlow: AI automation agencies or operators managing client "
+            "n8n, Make, Zapier, webhook, or production workflows that experience "
+            "silent failures, missed leads, or workflows that appear successful "
+            "but fail in reality"
+        )
+
+    status_msg = await update.message.reply_text(
+        "🔎 Hunting for real public discussions and potential prospects...\n\n"
+        "This can take a little while."
+    )
+
+    prompt = HUNT_PROMPT.format(topic=topic)
+
+    try:
+        result = await asyncio.to_thread(generate_grounded_search, prompt)
+
+        await status_msg.delete()
+        await update.message.reply_text(
+            f"🔎 **HUNT RESULTS**\n\n{result}\n\n"
+            "Next: use /outreach and paste any candidate post/profile you want me to qualify.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await status_msg.delete()
+        await update.message.reply_text(
+            f"❌ Hunt failed:\n`{str(e)}`",
+            parse_mode="Markdown"
+        )
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
@@ -650,6 +686,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('awaiting_candidate'):
+        await outreach_analysis(update, context)
+        return
+
     if context.user_data.get('awaiting_findings'):
         context.user_data['awaiting_findings'] = False
         user_findings = update.message.text
@@ -715,6 +755,7 @@ def main():
         app.job_queue.run_daily(scheduled_daily_pitch, time=target_time)
 
     print("🚀 Evidence-First Opportunity Scout running...")
+    print("✅ Commands registered: /start /pitch /hunt /outreach")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
