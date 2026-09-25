@@ -1,6 +1,8 @@
 import os
 import asyncio
 import threading
+import datetime
+import pytz
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -34,6 +36,7 @@ threading.Thread(target=run_health_server, daemon=True).start()
 # -------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MY_TELEGRAM_CHAT_ID = os.getenv("MY_TELEGRAM_CHAT_ID")  # Your chat ID for 8 AM alerts
 
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY environment variable.")
@@ -73,6 +76,29 @@ Actionable, non-paid strategy to acquire first customers.
 2. A hard question about user acquisition or defensibility.
 """
 
+IMPLEMENTATION_PROMPT = """
+You are a Principal Software Architect helping a solo developer build an MVP.
+Idea: {idea_context}
+
+Provide a concrete, actionable implementation blueprint following this exact structure:
+
+🏗️ MVP IMPLEMENTATION BLUEPRINT
+
+1. Project Folder Structure
+Show a clean text directory layout (e.g., app/api, app/services, app/models).
+
+2. Database Schema (PostgreSQL/Supabase)
+Provide the core SQL tables and fields needed to store essential state.
+
+3. Primary API Endpoints
+List 3-4 essential REST/GraphQL endpoints (HTTP Method, Route, Purpose).
+
+4. 3-Day Build Sprint Plan
+• Day 1: Core Backend & Data Models
+• Day 2: LLM Agent Integration / Third-Party Services
+• Day 3: Frontend Interface & MVP Deployment
+"""
+
 STRESS_TEST_EVAL_PROMPT = """
 You are a tough YC-style startup reviewer evaluating a founder's answer to a stress-test challenge.
 Original Idea: {idea_context}
@@ -85,29 +111,23 @@ Critique their answer concisely:
 """
 
 # -------------------------------------------------------------------
-# 3. Fail-proof Dynamic Generator (Fetches Live Active Catalog)
+# 3. Dynamic Gemini Generator
 # -------------------------------------------------------------------
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
     last_error = None
-
-    # Step A: Query Google API to retrieve models actually live right now
     try:
         available_models = []
         for m in ai_client.models.list():
             model_id = m.name.replace("models/", "")
-            # Filter for generation-capable models
             methods = getattr(m, "supported_generation_methods", []) or []
             if "generateContent" in methods or not methods:
                 available_models.append(model_id)
 
-        # Prioritize flash/free models first
         available_models.sort(key=lambda name: ("flash" not in name.lower(), name))
-
     except Exception as list_err:
-        available_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
+        available_models = ["gemini-1.5-flash", "gemini-2.5-flash"]
         last_error = list_err
 
-    # Step B: Iterate through active live models until one returns content
     for model in available_models:
         try:
             response = ai_client.models.generate_content(
@@ -132,11 +152,20 @@ def get_keyboard():
             InlineKeyboardButton("🎯 Answer Stress-Test", callback_data="btn_stress_test"),
             InlineKeyboardButton("🛠 Tech Stack Ideas", callback_data="btn_tech_stack"),
         ],
-        [InlineKeyboardButton("🔄 Generate Another Idea", callback_data="btn_new_idea")]
+        [
+            InlineKeyboardButton("🏗️ Implement This Idea", callback_data="btn_implement"),
+            InlineKeyboardButton("🔄 Generate Another Idea", callback_data="btn_new_idea"),
+        ]
     ])
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Startup Co-Pilot active! Type /pitch to receive today's blueprint.")
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(
+        f"👋 Startup Co-Pilot active!\n\n"
+        f"• Type /pitch to receive today's blueprint.\n"
+        f"• Your Chat ID is `{chat_id}` (save this in Render environment variables as `MY_TELEGRAM_CHAT_ID` for daily 8 AM pitches).",
+        parse_mode="Markdown"
+    )
 
 async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🤖 Agent scanning market gaps & compiling pitch...")
@@ -153,16 +182,31 @@ async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.delete()
         await update.message.reply_text(f"❌ {str(e)}")
 
+async def scheduled_daily_pitch(context: ContextTypes.DEFAULT_TYPE):
+    if not MY_TELEGRAM_CHAT_ID:
+        return
+    try:
+        pitch_text = await asyncio.to_thread(
+            generate_gemini_content,
+            prompt="Provide today's unique B2B micro-SaaS or AI Agent startup blueprint.",
+            system_instruction=SYSTEM_PROMPT
+        )
+        await context.bot.send_message(
+            chat_id=MY_TELEGRAM_CHAT_ID,
+            text=f"☀️ **GOOD MORNING! TODAY'S STARTUP BLUEPRINT**\n\n{pitch_text}",
+            reply_markup=get_keyboard(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"Daily Pitch Error: {e}")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    
-    # 1. ALWAYS answer the callback query first to stop Telegram UI spinner
     try:
         await query.answer()
     except Exception:
         pass
 
-    # 2. Route based on callback data using query.message (NOT update.message)
     if query.data == "btn_stress_test":
         context.user_data['awaiting_stress_reply'] = True
         await query.message.reply_text("🥊 Reply directly to this message with your solution to one of today's stress-test questions.")
@@ -175,6 +219,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Agent LLM Engine: Gemini Engine\n"
             "• Distribution: Automated Cold Outreach"
         )
+
+    elif query.data == "btn_implement":
+        last_idea = context.user_data.get('last_idea', 'Recent Startup Idea')
+        status_msg = await query.message.reply_text("⚙️ Architecting MVP implementation blueprint...")
+        try:
+            prompt = IMPLEMENTATION_PROMPT.format(idea_context=last_idea)
+            plan = await asyncio.to_thread(
+                generate_gemini_content,
+                prompt=prompt,
+                system_instruction="You are a Principal Software Architect."
+            )
+            await status_msg.delete()
+            await query.message.reply_text(text=plan)
+        except Exception as e:
+            await status_msg.delete()
+            await query.message.reply_text(f"❌ {str(e)}")
 
     elif query.data == "btn_new_idea":
         status_msg = await query.message.reply_text("🔄 Agent brainstorming fresh concept...")
@@ -209,8 +269,9 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await status_msg.delete()
             await update.message.reply_text(f"❌ {str(e)}")
+
 # -------------------------------------------------------------------
-# 5. Main Application Loop
+# 5. Main Application Loop & Scheduler
 # -------------------------------------------------------------------
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -219,6 +280,11 @@ def main():
     app.add_handler(CommandHandler("pitch", pitch_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_handler))
+
+    # Schedule Daily 8:00 AM Pitch (Asia/Kolkata timezone)
+    if MY_TELEGRAM_CHAT_ID:
+        target_time = datetime.time(hour=8, minute=0, second=0, tzinfo=pytz.timezone("Asia/Kolkata"))
+        app.job_queue.run_daily(scheduled_daily_pitch, time=target_time)
 
     print("🚀 Bot initialized, listening for updates...")
     app.run_polling(drop_pending_updates=True)
