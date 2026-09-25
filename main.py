@@ -155,9 +155,14 @@ async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    # Immediately notify Telegram to dismiss the loading spinner on the button
-    await query.answer()
+    
+    # 1. ALWAYS answer the callback query first to stop Telegram UI spinner
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
+    # 2. Route based on callback data using query.message (NOT update.message)
     if query.data == "btn_stress_test":
         context.user_data['awaiting_stress_reply'] = True
         await query.message.reply_text("🥊 Reply directly to this message with your solution to one of today's stress-test questions.")
