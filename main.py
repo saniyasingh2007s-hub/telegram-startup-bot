@@ -91,8 +91,7 @@ Critique their answer concisely:
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
     # Active valid Google models
     models_to_try = [
-      "gemini-2.5-flash-lite",
-    "gemini-2.5-flash"   
+      "gemini-3.8-flash"   
     ]
     last_error = None
 
