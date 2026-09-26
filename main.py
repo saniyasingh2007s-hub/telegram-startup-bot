@@ -289,27 +289,71 @@ GEMINI_MODELS = [
 ]
 
 
+import time
+import random
+
+
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
+
     last_error = None
 
+    # Try every configured model
     for model in GEMINI_MODELS:
-        try:
-            response = ai_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config={
-                    "system_instruction": system_instruction,
-                    "temperature": 0.5,
-                },
-            )
 
-            if response and response.text:
-                return response.text
+        # Retry temporary Gemini failures
+        for attempt in range(3):
 
-        except Exception as error:
-            last_error = error
+            try:
 
-    raise Exception(f"Gemini Engine Error: {str(last_error)}")
+                response = ai_client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={
+                        "system_instruction": system_instruction,
+                        "temperature": 0.5,
+                    },
+                )
+
+                if response and response.text:
+                    return response.text
+
+                last_error = Exception(
+                    f"Empty response from model {model}"
+                )
+
+            except Exception as error:
+
+                last_error = error
+
+                error_text = str(error)
+
+                # Temporary Gemini capacity/rate/server errors
+                retryable = (
+                    "503" in error_text
+                    or "UNAVAILABLE" in error_text
+                    or "429" in error_text
+                    or "RESOURCE_EXHAUSTED" in error_text
+                    or "500" in error_text
+                    or "INTERNAL" in error_text
+                    or "504" in error_text
+                )
+
+                if not retryable:
+                    break
+
+                # Exponential backoff: ~2s, 4s, 8s
+                delay = (2 ** attempt) + random.uniform(0, 1)
+
+                print(
+                    f"⚠️ Gemini {model} temporarily unavailable. "
+                    f"Retry {attempt + 1}/3 in {delay:.1f}s..."
+                )
+
+                time.sleep(delay)
+
+    raise Exception(
+        f"Gemini Engine Error: {str(last_error)}"
+    )
 
 
 # ================================================================
