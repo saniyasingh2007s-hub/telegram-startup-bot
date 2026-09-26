@@ -2,13 +2,15 @@ import os
 import asyncio
 import threading
 import datetime
+import pytz
 import json
-import re
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from google import genai
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -19,30 +21,34 @@ from telegram.ext import (
     filters,
 )
 
+
 # ================================================================
-# 1. HEALTH CHECK SERVER
+# 1. HEALTH-CHECK HTTP SERVER
 # ================================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(
-            b"11Hunt Evidence-First Prospect Discovery Agent is active!"
+            b"11Hunt Evidence-First Prospect Discovery is active!"
         )
 
     def log_message(self, format, *args):
-        # Keep hosting logs clean.
         return
 
 
 def run_health_server():
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
 
-threading.Thread(target=run_health_server, daemon=True).start()
+threading.Thread(
+    target=run_health_server,
+    daemon=True
+).start()
 
 
 # ================================================================
@@ -52,6 +58,7 @@ threading.Thread(target=run_health_server, daemon=True).start()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MY_TELEGRAM_CHAT_ID = os.getenv("MY_TELEGRAM_CHAT_ID")
+
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError(
@@ -63,97 +70,60 @@ if not GEMINI_API_KEY:
         "Missing GEMINI_API_KEY environment variable."
     )
 
+
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 # ================================================================
-# 3. DEFAULT 11HUNT PROJECT
-# ================================================================
-
-DEFAULT_PROJECT = """
-11Hunt is an evidence-first opportunity discovery platform for
-students, beginner freelancers, AI/no-code builders and small
-agencies.
-
-The product helps people find genuine business problems that they
-can realistically solve and sell.
-
-Core workflow:
-
-Business / Person
-→ Evidence
-→ Problem Signal
-→ Opportunity
-→ Solution
-→ Personalized Pitch
-→ Client
-
-11Hunt should NOT assume that a missing feature means a real problem.
-
-We need evidence before making a claim.
-
-The current goal is to discover potential users, early adopters,
-design partners, or people publicly experiencing the problem of
-finding clients, discovering real business problems, validating
-opportunities, or turning their AI/no-code skills into paid work.
-"""
-
-DEFAULT_TARGET = """
-Potential 11Hunt users:
-
-- students trying to start freelancing
-- beginner freelancers
-- AI freelancers
-- no-code builders
-- automation freelancers
-- small AI agencies
-- student entrepreneurs
-- people learning AI/automation and trying to get clients
-- people publicly asking how to find clients
-- people struggling with cold outreach or getting their first client
-- people looking for practical freelance opportunities
-"""
-
-
-# ================================================================
-# 4. AI PROMPTS
+# 3. 11HUNT CORE SYSTEM PROMPT
 # ================================================================
 
 SYSTEM_PROMPT = """
-You are the Chief AI Opportunity Scout for 11Hunt.
+You are the AI Opportunity Scout inside 11Hunt.
 
-11Hunt helps beginners, students, freelancers, AI/no-code builders
-and small agencies discover genuine business problems that they can
-realistically solve and sell.
+11Hunt helps beginner AI freelancers, students, no-code builders,
+AI automation freelancers and early AI service providers discover
+real opportunities to get their first clients.
 
-Your job is NOT to manufacture problems.
+The core loop is:
 
-You must separate:
+BUSINESS / PERSON
+        ↓
+EVIDENCE
+        ↓
+PROBLEM
+        ↓
+OPPORTUNITY
+        ↓
+SOLUTION
+        ↓
+PERSONALIZED PITCH
+        ↓
+CLIENT
+
+You must NOT invent problems.
+
+Strictly classify statements as:
 
 🟢 OBSERVED
 Something directly supported by evidence.
 
 🟡 HYPOTHESIS
-A reasonable interpretation that still needs validation.
+A reasonable interpretation that still requires validation.
 
 🔴 UNKNOWN
 Something we do not know yet.
 
 Never treat:
 - a missing feature
-- a complaint without context
-- a generic request
-- a hypothetical statement
+- a weak website
+- a social media post
+- someone asking a question
+- low follower count
+- a job post
+- someone saying they are struggling
 
-as proof of a real business problem.
-
-Always use evidence-first reasoning.
-"""
-
-
-OPPORTUNITY_PROMPT = """
-Scout one specific, unvalidated business problem or workflow
-friction that could potentially become a realistic opportunity.
+as proof that they will pay.
 
 Return:
 
@@ -161,211 +131,270 @@ Return:
 
 STATUS: 🔴 UNVALIDATED
 
-### 1. EVIDENCE BREAKDOWN
+### 1. EPISTEMIC BREAKDOWN
 
 🟢 OBSERVED:
-- 1-2 observable market facts.
+- 1-2 concrete facts.
 
 🟡 HYPOTHESIS:
-- 2-3 possible problems or friction points.
+- 2-3 possible pains.
 
 🔴 UNKNOWN:
-- 3 things that must be validated with real people.
+- 3 things that must be validated.
 
-### 2. TARGET PERSONA
+### 2. TARGET PROFILE
 
-• Who experiences this?
-• What are they trying to accomplish?
-• What are they currently doing?
+• Target Persona:
+• Current Situation:
+• Likely Existing Workaround:
 
 ### 3. VALIDATION MISSION
 
-Find 5 real people/businesses matching the target.
+Target 5 specific people.
 
-Do NOT pitch a solution yet.
+Do not pitch a solution yet.
 
-Questions:
+Ask:
 
-1. How do you currently handle this?
-2. What is the hardest part?
-3. When did this last cause a problem?
-4. What do you currently do when it happens?
+1. How are you currently getting clients?
+2. What is the hardest part of that process?
+3. What have you already tried?
+4. When was the last time this caused a real problem?
+5. What would you change if you could?
 """
 
 
+# ================================================================
+# 4. VALIDATION PROMPT
+# ================================================================
+
 VALIDATION_PROMPT = """
-You are a Lean Customer Discovery Expert.
+You are a Lean Customer Discovery Expert working inside 11Hunt.
 
-Opportunity:
-
+Opportunity Context:
 {idea_context}
 
-Create a concrete validation plan.
+Current Status:
+{current_status}
 
-Return:
+Create a concrete customer-discovery plan.
 
 🎯 CUSTOMER DISCOVERY ROADMAP
 
-1. TARGET PROFILE
-Who exactly should be interviewed?
+1. TARGET PROFILES
+
+Identify exact types of people we should talk to.
+
+Focus on:
+- beginner AI freelancers
+- students building AI services
+- AI automation freelancers
+- no-code builders
+- people trying to get their first freelance client
+- people who have tried outreach but are getting little/no response
 
 2. WHERE TO FIND THEM
-Give 5 specific search locations/platforms.
 
-3. SEARCH QUERIES
-Give copy-paste search queries.
+Give 3 specific platforms and search queries.
 
-4. NON-LEADING QUESTIONS
+3. NON-LEADING QUESTIONS
+
 Give 5 neutral questions.
 
-5. REAL SIGNALS
-What answers would indicate meaningful pain?
+Do NOT pitch a product.
 
-6. INVALIDATION SIGNALS
-What answers would indicate this is probably not important?
+4. SIGNAL EVALUATION
 
-Do not assume the problem is real.
+GREEN:
+What evidence would prove this is a meaningful problem?
+
+RED:
+What evidence would show this is not a meaningful problem?
+
+5. NEXT ACTION
+
+Give one concrete action for today.
 """
 
 
+# ================================================================
+# 5. FIND CUSTOMERS PROMPT
+# ================================================================
+
 FIND_CUSTOMERS_PROMPT = """
-You are a customer discovery strategist.
+You are the customer-discovery strategist for 11Hunt.
 
-Project:
+Opportunity Context:
+{idea_context}
 
-{project}
+We are looking for beginner AI freelancers and early AI builders
+who are struggling to acquire their first clients.
 
-Target:
-
-{target}
-
-Create a prospect discovery blueprint.
-
-Return:
+Create:
 
 👥 FIND POTENTIAL CUSTOMERS
 
-1. EXACT PERSONA
-2. SEARCH QUERIES
-3. REDDIT SEARCHES
-4. LINKEDIN SEARCH IDEAS
-5. X/TWITTER SEARCH IDEAS
-6. COMMUNITIES
-7. WHAT EVIDENCE TO LOOK FOR
-8. WHAT NOT TO COUNT AS EVIDENCE
-9. NON-PITCH RESEARCH MESSAGE
+1. EXACT SEARCH QUERIES
+
+Give copy/paste queries for:
+
+Google
+Reddit
+X
+LinkedIn
+YouTube
+
+Focus on people expressing actual client-acquisition problems.
+
+Examples of intent:
+
+"how to get first AI client"
+"no clients AI automation"
+"sent 50 cold messages no response"
+"how to find clients as AI freelancer"
+"AI freelancer struggling"
+"first freelance client AI"
+
+2. COMMUNITIES
+
+Identify communities where these people naturally discuss their problems.
+
+3. DISCOVERY MESSAGE
+
+Write a short research message.
+
+Do NOT sell.
+
+Do NOT pretend we already have a product.
+
+Do NOT make claims about their business.
 """
 
 
-OUTREACH_PROMPT = """
-You are an evidence-first outreach assistant.
+# ================================================================
+# 6. OUTREACH PROMPT
+# ================================================================
 
-PROJECT:
-{project}
+OUTREACH_PROMPT = """
+You are the evidence-first outreach assistant inside 11Hunt.
 
 TARGET:
-{target}
+Beginner AI freelancers, students and early AI builders struggling
+to get their first clients.
 
-CANDIDATE / POST:
+Opportunity Context:
+{idea_context}
+
+Candidate/Post/Profile:
 {candidate}
 
-Analyze ONLY the information provided.
+Analyze ONLY what is actually present in the candidate text.
 
 Never invent:
 - their business
+- their income
+- their number of clients
+- their skill level
+- their willingness to pay
 - their pain
-- their budget
-- their job
-- their intentions
-- their experience
 
 Return:
 
-🎯 PROSPECT RELEVANCE
+🎯 RELEVANCE:
 HIGH / MEDIUM / LOW
 
-🔎 EVIDENCE
-List concrete evidence from the candidate text.
+🔎 EVIDENCE:
+1-3 concrete things actually visible in the candidate text.
 
-🟡 INFERENCE
-What might be true but is not confirmed.
+🟡 HYPOTHESIS:
+What their problem might be.
 
-🔴 UNKNOWN
-What we still need to learn.
+🔴 UNKNOWN:
+What we still need to know.
 
-💬 PUBLIC COMMENT
-Write a short natural research-oriented comment.
-Do NOT pitch a product.
+💬 PUBLIC COMMENT:
+A short natural research-oriented comment.
 
-📩 RESEARCH DM
-Write a short message asking about their actual experience.
-Do NOT pretend we already know their problem.
+📩 RESEARCH DM:
+A short human message asking about their experience.
 
-❓ FOLLOW-UP
-Give one non-leading question.
+Do not pitch a product.
 
-⚠️ HUMAN APPROVAL REQUIRED
-The message must be reviewed and manually sent by the user.
+❓ FOLLOW-UP:
+One non-leading question.
+
+⚠️ APPROVAL:
+The message must be reviewed and sent manually by the user.
 """
 
 
+# ================================================================
+# 7. CHALLENGE PROMPT
+# ================================================================
+
 CHALLENGE_PROMPT = """
-You are a skeptical startup advisor.
+You are a Devil's Advocate Startup Investor inside 11Hunt.
 
-Project / opportunity:
-
+Opportunity Context:
 {idea_context}
 
-Challenge the opportunity.
-
-Return:
+Challenge this opportunity.
 
 🥊 HYPOTHESIS CHALLENGE
 
-1. What if the problem is too rare?
-2. What if the current workaround is good enough?
-3. What if people do not have budget?
-4. What if they do not care enough to change?
-5. What evidence would prove this hypothesis wrong?
-6. What can be tested manually in 24 hours?
+1. What if beginner AI freelancers don't actually care enough?
+2. What if they can acquire clients through existing communities?
+3. What if the real problem is skill rather than client acquisition?
+4. What if they don't have money to pay for a solution?
+5. What if free AI tools already solve most of this?
+6. What is the simplest zero-code test that could prove this idea wrong?
+
+Be skeptical.
+
+Do not encourage the founder merely because the idea sounds interesting.
 """
 
+
+# ================================================================
+# 8. ANALYZE FINDINGS
+# ================================================================
 
 ANALYZE_FINDINGS_PROMPT = """
 You are a truth-seeking customer discovery evaluator.
 
-Original opportunity:
-
+Original Opportunity:
 {idea_context}
 
-Current status:
-
+Current Status:
 {current_status}
 
-Discovery findings:
-
+Founder Discovery Findings:
 {user_findings}
 
-Evaluate ONLY the supplied findings.
-
-Return:
+Evaluate ONLY the evidence provided.
 
 📊 DISCOVERY FINDINGS EVALUATION
 
-1. CONFIRMED EVIDENCE
-2. SUPPORTED HYPOTHESES
-3. DISPROVED HYPOTHESES
-4. UNKNOWN
-5. TRUTH SIGNAL
+1. EVIDENCE ANALYSIS
 
-Choose exactly one:
+Confirmed:
+What observations support the hypothesis?
+
+Disproved:
+What assumptions appear wrong?
+
+2. SIGNAL
+
+Choose one:
 
 NO SIGNAL
 WEAK SIGNAL
 STRONG SIGNAL
 PAYMENT SIGNAL
 
-6. RECOMMENDED STATUS
+Explain exactly why.
+
+3. STATUS
 
 Choose one:
 
@@ -375,129 +404,135 @@ Choose one:
 💰 PAYMENT SIGNAL
 ❌ KILL
 
-7. NEXT TWO ACTIONS
-"""
+Do not promote an idea simply because someone expressed interest.
 
+4. NEXT ACTIONS
 
-EXPERIMENT_PROMPT = """
-You are a Lean Startup Experiment Designer.
-
-Project / opportunity:
-
-{idea_context}
-
-Findings:
-
-{user_findings}
-
-Design the smallest possible demand experiment.
-
-Return:
-
-🧪 LOW-FIDELITY DEMAND EXPERIMENT
-
-1. MANUAL / CONCIERGE TEST
-2. EXACT CUSTOMER ACTION REQUIRED
-3. SUCCESS METRIC
-4. FAILURE CONDITION
-5. 24-HOUR TEST
-6. MESSAGE TO SEND TO PARTICIPANTS
-
-Do not recommend building software before demand is tested.
-"""
-
-
-MVP_PROMPT = """
-You are a technical product architect.
-
-Opportunity:
-
-{idea_context}
-
-Validation status:
-
-{current_status}
-
-Create a lean MVP plan.
-
-Return:
-
-🛠️ LEAN MVP BUILD BLUEPRINT
-
-1. Validated problem
-2. Target user
-3. Core workflow
-4. Minimum features
-5. What NOT to build
-6. Fastest implementation approach
-7. 3-day build sprint
-8. Pilot test
-"""
-
-
-SALES_PROMPT = """
-You are a B2B customer acquisition strategist.
-
-Project:
-
-{idea_context}
-
-Evidence:
-
-{user_findings}
-
-Create a first-customer strategy.
-
-Return:
-
-💼 FIRST CUSTOMER ACQUISITION ROADMAP
-
-1. Who to contact first
-2. Why they are qualified
-3. Pilot offer
-4. Personalized outreach
-5. Follow-up
-6. Common objections
-7. What evidence should be collected before asking for payment
-"""
-
-
-SEARCH_QUERY_PROMPT = """
-You are a prospect research strategist.
-
-PROJECT:
-{project}
-
-TARGET:
-{target}
-
-Generate public-web searches that can discover real people who may
-be experiencing the target problem or actively looking for the type
-of help/opportunity described.
-
-Rules:
-
-- Search for people, not generic articles.
-- Search for first-hand experiences.
-- Search for questions.
-- Search for frustrations.
-- Search for people asking for help.
-- Search for people trying to solve the problem.
-- Avoid generic "best tools" content.
-- Avoid marketing spam.
-- Avoid company promotional pages.
-
-Return ONLY 10 search queries, one per line.
-
-Queries should work reasonably well on:
-Reddit
-Hacker News
-GitHub
+Give 2 concrete next steps.
 """
 
 
 # ================================================================
-# 5. GEMINI ENGINE
+# 9. EXPERIMENT PROMPT
+# ================================================================
+
+EXPERIMENT_PROMPT = """
+You are a Lean Startup Experiment Designer.
+
+Opportunity:
+{idea_context}
+
+Discovery Evidence:
+{user_findings}
+
+Design the smallest possible demand experiment.
+
+🧪 LOW-FIDELITY DEMAND EXPERIMENT
+
+1. Manual Offer
+
+How can the result be delivered manually?
+
+2. Success Metric
+
+What exact behavior would prove demand?
+
+Examples:
+
+- person agrees to a call
+- person gives real data
+- person allows a manual pilot
+- person agrees to pay
+- person introduces another person
+
+3. 24-HOUR TEST
+
+Give a simple test that can be completed within 24 hours.
+
+4. MESSAGE
+
+Write the shortest possible research/demand message.
+
+Do not overpromise.
+"""
+
+
+# ================================================================
+# 10. MVP PROMPT
+# ================================================================
+
+MVP_PROMPT = """
+You are a Technical Product Architect.
+
+Opportunity:
+{idea_context}
+
+Validation Status:
+{current_status}
+
+Design a lean MVP only if the problem has sufficient evidence.
+
+🛠️ LEAN MVP BLUEPRINT
+
+1. Validated Problem
+
+2. Target User
+
+3. Core Job-To-Be-Done
+
+4. Simplest Solution
+
+5. Fastest Technology Stack
+
+6. 3-Day Build Plan
+
+DAY 1:
+Core data and logic.
+
+DAY 2:
+Main value delivery.
+
+DAY 3:
+Interface and pilot.
+
+Avoid unnecessary features.
+"""
+
+
+# ================================================================
+# 11. SALES PROMPT
+# ================================================================
+
+SALES_PROMPT = """
+You are a B2B customer acquisition strategist.
+
+Opportunity:
+{idea_context}
+
+Discovery Results:
+{user_findings}
+
+Create:
+
+💼 FIRST CUSTOMER ACQUISITION ROADMAP
+
+1. WHO TO FOLLOW UP WITH
+
+2. VALUE PROPOSITION
+
+3. PAID PILOT
+
+4. FOLLOW-UP MESSAGE
+
+5. OBJECTION HANDLING
+
+Keep claims evidence-based.
+Do not fabricate results.
+"""
+
+
+# ================================================================
+# 12. GEMINI GENERATOR
 # ================================================================
 
 def generate_gemini_content(
@@ -510,19 +545,21 @@ def generate_gemini_content(
     try:
         available_models = []
 
-        for model in ai_client.models.list():
-            model_id = model.name.replace("models/", "")
+        for model_info in ai_client.models.list():
+            model_id = model_info.name.replace("models/", "")
 
             methods = getattr(
-                model,
+                model_info,
                 "supported_generation_methods",
                 []
             ) or []
 
-            if "generateContent" in methods or not methods:
+            if (
+                "generateContent" in methods
+                or not methods
+            ):
                 available_models.append(model_id)
 
-        # Prefer flash models.
         available_models.sort(
             key=lambda name: (
                 "flash" not in name.lower(),
@@ -531,23 +568,21 @@ def generate_gemini_content(
         )
 
     except Exception as list_error:
-        last_error = list_error
-
         available_models = [
             "gemini-2.5-flash",
-            "gemini-1.5-flash",
+            "gemini-1.5-flash"
         ]
+        last_error = list_error
 
     for model in available_models:
 
         try:
-
             response = ai_client.models.generate_content(
                 model=model,
                 contents=prompt,
                 config={
                     "system_instruction": system_instruction,
-                    "temperature": 0.4,
+                    "temperature": 0.65
                 }
             )
 
@@ -564,7 +599,7 @@ def generate_gemini_content(
 
 
 # ================================================================
-# 6. PUBLIC WEB HELPERS
+# 13. PUBLIC HTTP HELPER
 # ================================================================
 
 def _fetch_json(url: str, timeout: int = 15):
@@ -572,9 +607,12 @@ def _fetch_json(url: str, timeout: int = 15):
     request = Request(
         url,
         headers={
-            "User-Agent":
-                "11Hunt-Prospect-Discovery/1.0"
-        },
+            "User-Agent": (
+                "11Hunt/1.0 "
+                "(Evidence-First Prospect Discovery)"
+            ),
+            "Accept": "application/json"
+        }
     )
 
     with urlopen(
@@ -588,89 +626,7 @@ def _fetch_json(url: str, timeout: int = 15):
 
 
 # ================================================================
-# 7. REDDIT SEARCH
-# ================================================================
-
-def _search_reddit(query: str):
-
-    params = urlencode({
-        "q": query,
-        "sort": "new",
-        "t": "year",
-        "limit": "15",
-        "raw_json": "1",
-    })
-
-    url = (
-        "https://www.reddit.com/search.json?"
-        + params
-    )
-
-    data = _fetch_json(url)
-
-    results = []
-
-    for child in data.get(
-        "data",
-        {}
-    ).get(
-        "children",
-        []
-    ):
-
-        item = child.get("data", {})
-
-        title = item.get(
-            "title",
-            ""
-        ).strip()
-
-        body = item.get(
-            "selftext",
-            ""
-        ).strip()
-
-        author = (
-            item.get("author")
-            or "[deleted]"
-        )
-
-        permalink = item.get(
-            "permalink",
-            ""
-        )
-
-        if permalink and not permalink.startswith("http"):
-            permalink = (
-                "https://www.reddit.com"
-                + permalink
-            )
-
-        if not title and not body:
-            continue
-
-        results.append({
-            "platform": "Reddit",
-            "person": f"u/{author}",
-            "title": title or "Reddit post",
-            "evidence": " ".join(body.split())[:600],
-            "url": permalink,
-            "contact": (
-                "COMMENT / DM"
-                if author != "[deleted]"
-                else "UNKNOWN"
-            ),
-            "score": item.get(
-                "score",
-                0
-            ),
-        })
-
-    return results
-
-
-# ================================================================
-# 8. HACKER NEWS SEARCH
+# 14. HACKER NEWS SEARCH
 # ================================================================
 
 def _search_hackernews(query: str):
@@ -678,28 +634,21 @@ def _search_hackernews(query: str):
     params = urlencode({
         "query": query,
         "tags": "(story,comment)",
-        "hitsPerPage": "15",
+        "hitsPerPage": "20"
     })
 
     url = (
         "https://hn.algolia.com/api/v1/"
-        "search_by_date?"
-        + params
+        f"search_by_date?{params}"
     )
 
     data = _fetch_json(url)
 
     results = []
 
-    for hit in data.get(
-        "hits",
-        []
-    ):
+    for hit in data.get("hits", []):
 
-        author = (
-            hit.get("author")
-            or "[unknown]"
-        )
+        author = hit.get("author") or "[unknown]"
 
         object_id = hit.get(
             "objectID",
@@ -718,347 +667,726 @@ def _search_hackernews(query: str):
             or ""
         )
 
-        # Remove simple HTML.
-        text = re.sub(
-            r"<[^>]+>",
-            " ",
+        text = (
             str(text)
+            .replace("<p>", " ")
+            .replace("</p>", " ")
         )
 
         text = " ".join(
             text.split()
         )
 
-        item_url = (
+        if not title and not text:
+            continue
+
+        result_url = (
             hit.get("url")
             or (
-                "https://news.ycombinator.com/"
+                f"https://news.ycombinator.com/"
                 f"item?id={object_id}"
-                if object_id
-                else ""
             )
         )
 
         results.append({
-            "platform": "Hacker News",
             "person": f"@{author}",
+            "platform": "Hacker News",
             "title": title,
-            "evidence": text[:600],
-            "url": item_url,
-            "contact":
-                "PUBLIC PROFILE / COMMENT",
-            "score":
-                hit.get("points") or 0,
+            "evidence": text[:500],
+            "url": result_url,
+            "contact": "PUBLIC PROFILE / COMMENT",
+            "score": hit.get("points") or 0,
+            "created": hit.get(
+                "created_at_i",
+                0
+            )
         })
 
     return results
 
 
 # ================================================================
-# 9. GITHUB SEARCH
+# 15. GITHUB SEARCH
 # ================================================================
 
 def _search_github(query: str):
 
     github_query = (
-        f"{query} "
-        "in:title,body "
-        "is:issue"
+        f'"{query}" '
+        f'in:title,body '
+        f'is:issue'
     )
 
     params = urlencode({
         "q": github_query,
         "sort": "updated",
         "order": "desc",
-        "per_page": "15",
+        "per_page": "20"
     })
 
     url = (
         "https://api.github.com/search/issues?"
-        + params
+        f"{params}"
     )
 
     data = _fetch_json(url)
 
     results = []
 
-    for item in data.get(
-        "items",
-        []
-    ):
+    for item in data.get("items", []):
 
         user = (
             item.get("user") or {}
-        ).get(
-            "login"
-        ) or "[unknown]"
+        ).get("login") or "[unknown]"
 
         body = " ".join(
-            (
-                item.get("body")
-                or ""
-            ).split()
+            (item.get("body") or "").split()
+        )
+
+        title = item.get(
+            "title",
+            "GitHub discussion"
         )
 
         results.append({
-            "platform": "GitHub",
             "person": f"@{user}",
-            "title":
-                item.get(
-                    "title",
-                    "GitHub issue"
-                ),
-            "evidence":
-                body[:600],
-            "url":
-                item.get(
-                    "html_url",
-                    ""
-                ),
-            "contact":
-                "ISSUE COMMENT / PROFILE",
-            "score":
-                item.get(
-                    "comments",
-                    0
-                ),
+            "platform": "GitHub",
+            "title": title,
+            "evidence": body[:500],
+            "url": item.get(
+                "html_url",
+                ""
+            ),
+            "contact": "ISSUE COMMENT / PROFILE",
+            "score": item.get(
+                "comments",
+                0
+            ),
+            "created": 0
         })
 
     return results
 
 
 # ================================================================
-# 10. SEARCH QUERY GENERATION
+# 16. DEV.TO SEARCH
 # ================================================================
 
-async def generate_search_queries(
-    project: str,
-    target: str
-):
+def _search_devto(query: str):
 
-    prompt = SEARCH_QUERY_PROMPT.format(
-        project=project,
-        target=target
+    tag_map = {
+        "freelance": "freelancing",
+        "freelancer": "freelancing",
+        "clients": "freelancing",
+        "client": "freelancing",
+        "ai": "ai",
+        "artificial intelligence": "ai",
+        "automation": "automation",
+        "no-code": "nocode",
+        "nocode": "nocode",
+        "career": "career",
+        "student": "career",
+    }
+
+    query_lower = query.lower()
+
+    selected_tags = []
+
+    for keyword, tag in tag_map.items():
+        if keyword in query_lower:
+            if tag not in selected_tags:
+                selected_tags.append(tag)
+
+    if not selected_tags:
+        selected_tags = [
+            "freelancing",
+            "ai"
+        ]
+
+    results = []
+
+    for tag in selected_tags[:2]:
+
+        params = urlencode({
+            "tag": tag,
+            "per_page": 30
+        })
+
+        url = (
+            "https://dev.to/api/articles?"
+            f"{params}"
+        )
+
+        try:
+            data = _fetch_json(url)
+        except Exception:
+            continue
+
+        for article in data:
+
+            title = article.get(
+                "title",
+                ""
+            )
+
+            description = article.get(
+                "description",
+                ""
+            )
+
+            combined = (
+                f"{title} {description}"
+            ).lower()
+
+            # Only keep articles that contain
+            # actual client-acquisition language.
+            intent_terms = [
+                "client",
+                "clients",
+                "freelance",
+                "freelancer",
+                "first client",
+                "getting clients",
+                "find clients",
+                "cold outreach",
+                "customer"
+            ]
+
+            if not any(
+                term in combined
+                for term in intent_terms
+            ):
+                continue
+
+            author = (
+                article.get("user") or {}
+            ).get(
+                "username",
+                "[unknown]"
+            )
+
+            results.append({
+                "person": f"@{author}",
+                "platform": "Dev.to",
+                "title": title,
+                "evidence": description[:500],
+                "url": article.get(
+                    "url",
+                    ""
+                ),
+                "contact": "PUBLIC PROFILE / ARTICLE",
+                "score": article.get(
+                    "positive_reactions_count",
+                    0
+                ),
+                "created": 0
+            })
+
+    return results
+
+
+# ================================================================
+# 17. REDDIT
+# ================================================================
+#
+# Reddit frequently returns HTTP 403 to unauthenticated
+# server-side requests.
+#
+# We deliberately DO NOT make Reddit failure crash /hunt.
+#
+# If Reddit blocks the request, the source is simply marked
+# unavailable and the other public sources continue.
+# ================================================================
+
+def _search_reddit(query: str):
+
+    params = urlencode({
+        "q": query,
+        "sort": "new",
+        "t": "year",
+        "limit": "15",
+        "raw_json": "1"
+    })
+
+    url = (
+        "https://www.reddit.com/search.json?"
+        f"{params}"
     )
 
     try:
 
-        result = await asyncio.to_thread(
-            generate_gemini_content,
-            prompt,
-            "You generate precise public-web prospect research queries."
-        )
+        data = _fetch_json(url)
 
-        queries = []
+    except HTTPError as error:
 
-        for line in result.splitlines():
-
-            line = re.sub(
-                r"^\s*[\d\-\*\.)]+\s*",
-                "",
-                line
-            ).strip()
-
-            line = line.strip(
-                "\"'"
+        if error.code == 403:
+            raise Exception(
+                "Reddit denied unauthenticated public search (403)"
             )
 
-            if (
-                line
-                and len(line) > 5
-                and line not in queries
-            ):
-                queries.append(line)
+        raise
 
-        if queries:
-            return queries[:10]
+    results = []
 
-    except Exception:
-        pass
+    for child in data.get(
+        "data",
+        {}
+    ).get(
+        "children",
+        []
+    ):
 
-    # Fallback searches.
-    return [
-        "struggling to get freelance clients",
-        "how to get first freelance client",
-        "freelancer no clients",
-        "AI freelancer looking for clients",
-        "no code freelancer looking for work",
-        "student freelancer getting clients",
-        "cold outreach no replies freelancer",
-        "how do freelancers find clients",
-        "AI automation freelancer clients",
-        "looking for freelance opportunities",
-    ]
+        item = child.get(
+            "data",
+            {}
+        )
+
+        title = item.get(
+            "title",
+            ""
+        )
+
+        body = item.get(
+            "selftext",
+            ""
+        )
+
+        if not title and not body:
+            continue
+
+        author = (
+            item.get("author")
+            or "[deleted]"
+        )
+
+        permalink = item.get(
+            "permalink",
+            ""
+        )
+
+        if permalink and not permalink.startswith(
+            "http"
+        ):
+            permalink = (
+                "https://www.reddit.com"
+                + permalink
+            )
+
+        results.append({
+            "person": f"u/{author}",
+            "platform": "Reddit",
+            "title": title,
+            "evidence": body[:500],
+            "url": permalink,
+            "contact": (
+                "COMMENT / DM"
+                if author != "[deleted]"
+                else "UNKNOWN"
+            ),
+            "score": item.get(
+                "score",
+                0
+            ),
+            "created": item.get(
+                "created_utc",
+                0
+            )
+        })
+
+    return results
 
 
 # ================================================================
-# 11. PROSPECT SIGNAL SCORING
+# 18. 11HUNT TARGET SIGNAL SCORING
 # ================================================================
 
-def score_prospect(
-    result,
-    target
-):
+def score_prospect(result):
 
-    text = (
+    blob = (
         f"{result.get('title', '')} "
         f"{result.get('evidence', '')}"
     ).lower()
 
-    positive_signals = [
-        "looking for",
-        "struggling",
-        "can't find",
-        "cannot find",
-        "no clients",
-        "first client",
-        "need clients",
-        "get clients",
-        "finding clients",
-        "cold outreach",
-        "outreach",
+    # ------------------------------------------------------------
+    # Strong target signals
+    # ------------------------------------------------------------
+
+    freelancer_terms = [
         "freelance",
         "freelancer",
+        "freelancing",
+        "ai freelancer",
+        "freelance ai",
+        "freelance developer",
+        "freelance designer",
+        "ai automation freelancer",
+        "no-code freelancer",
+        "student freelancer"
+    ]
+
+    client_terms = [
+        "client",
+        "clients",
+        "customer",
+        "customers",
+        "first client",
+        "first customer",
+        "get clients",
+        "getting clients",
+        "find clients",
+        "finding clients",
+        "land clients",
+        "landing clients",
+        "client acquisition"
+    ]
+
+    struggle_terms = [
+        "no clients",
+        "no client",
+        "can't get clients",
+        "cant get clients",
+        "cannot get clients",
+        "struggling to get clients",
+        "struggle to get clients",
+        "hard to get clients",
+        "difficult to get clients",
+        "how do i get clients",
+        "how to get clients",
+        "looking for clients",
+        "need clients",
+        "need my first client",
+        "first client",
+        "haven't got a client",
+        "havent got a client",
+        "zero clients",
+        "0 clients",
+        "no response",
+        "no replies",
+        "no one responds",
+        "cold outreach",
+        "cold dm",
+        "cold email",
+        "sent messages",
+        "sent 50",
+        "sent 100"
+    ]
+
+    ai_terms = [
+        "ai",
+        "artificial intelligence",
+        "chatgpt",
+        "claude",
+        "gemini",
         "ai automation",
+        "automation",
+        "agent",
+        "ai agent",
+        "n8n",
+        "make.com",
+        "zapier",
         "no-code",
-        "nocode",
-        "agency",
-        "client acquisition",
-        "looking for work",
-        "need work",
-        "how do i get",
-        "how can i get",
-        "any advice",
-        "anyone hiring",
+        "nocode"
     ]
 
-    spam_signals = [
-        "buy now",
-        "discount",
-        "casino",
-        "crypto giveaway",
-        "seo agency",
-        "best vpn",
-        "newsletter",
-        "sponsored",
+    student_beginner_terms = [
+        "student",
+        "beginner",
+        "new freelancer",
+        "starting freelancing",
+        "just started",
+        "starting out",
+        "new to freelancing",
+        "learning",
+        "beginner freelancer"
     ]
 
-    score = 0
-    evidence_matches = []
-
-    for term in positive_signals:
-
-        if term in text:
-
-            score += 8
-
-            if len(evidence_matches) < 4:
-                evidence_matches.append(term)
-
-    for term in spam_signals:
-
-        if term in text:
-            score -= 25
-
-    # First-person discussion is more useful.
-    first_person = [
-        "i am",
-        "i'm",
-        "i have",
-        "i'm struggling",
-        "i need",
-        "my",
-        "we are",
-        "we're",
-        "our",
+    pain_terms = [
+        "struggling",
+        "struggle",
+        "hard",
+        "difficult",
+        "problem",
+        "issue",
+        "frustrated",
+        "frustrating",
+        "confused",
+        "don't know",
+        "dont know",
+        "help",
+        "advice",
+        "stuck",
+        "failed",
+        "not working"
     ]
 
-    if any(term in text for term in first_person):
-        score += 15
+    # ------------------------------------------------------------
+    # Count signals
+    # ------------------------------------------------------------
 
-    # Questions often represent active discovery.
-    if "?" in text:
-        score += 8
-
-    # Longer evidence generally gives us more to work with.
-    if len(result.get("evidence", "")) > 120:
-        score += 5
-
-    if score >= 55:
-        signal = "🔥 HIGH"
-
-    elif score >= 30:
-        signal = "🟡 MEDIUM"
-
-    else:
-        signal = "🔴 LOW"
-
-    result["signal"] = signal
-    result["signal_score"] = score
-    result["matched_signals"] = evidence_matches
-
-    return result
-
-
-# ================================================================
-# 12. HUNT PUBLIC PROSPECTS
-# ================================================================
-
-async def hunt_public_prospects(
-    project: str,
-    target: str
-):
-
-    queries = await generate_search_queries(
-        project,
-        target
+    freelancer_score = sum(
+        1
+        for term in freelancer_terms
+        if term in blob
     )
 
+    client_score = sum(
+        1
+        for term in client_terms
+        if term in blob
+    )
+
+    struggle_score = sum(
+        1
+        for term in struggle_terms
+        if term in blob
+    )
+
+    ai_score = sum(
+        1
+        for term in ai_terms
+        if term in blob
+    )
+
+    beginner_score = sum(
+        1
+        for term in student_beginner_terms
+        if term in blob
+    )
+
+    pain_score = sum(
+        1
+        for term in pain_terms
+        if term in blob
+    )
+
+    # ------------------------------------------------------------
+    # Ignore obvious non-human/bot content
+    # ------------------------------------------------------------
+
+    person = (
+        result.get(
+            "person",
+            ""
+        )
+        .lower()
+    )
+
+    bot_terms = [
+        "[bot]",
+        "github-actions",
+        "newsletter",
+        "digest",
+        "automoderator"
+    ]
+
+    if any(
+        term in person
+        for term in bot_terms
+    ):
+        return "🔴 LOW", 0
+
+    # ------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------
+
+    score = 0
+
+    if freelancer_score:
+        score += 30
+
+    if ai_score:
+        score += 20
+
+    if client_score:
+        score += 15
+
+    if struggle_score:
+        score += 30
+
+    if beginner_score:
+        score += 15
+
+    if pain_score:
+        score += 10
+
+    # Strongest signal:
+    # AI/freelancer + explicit client struggle
+    if (
+        (freelancer_score or beginner_score)
+        and ai_score
+        and struggle_score
+    ):
+        score += 30
+
+    # ------------------------------------------------------------
+    # Signal classification
+    # ------------------------------------------------------------
+
+    if score >= 100:
+        return "🔥 HIGH", score
+
+    if score >= 65:
+        return "🟡 MEDIUM", score
+
+    return "🔴 LOW", score
+
+
+# ================================================================
+# 19. MAIN 11HUNT PROSPECT HUNT
+# ================================================================
+
+def hunt_public_web(topic: str) -> str:
+
+    """
+    11Hunt Prospect Discovery.
+
+    Target:
+    Beginner AI freelancers and early AI builders
+    struggling to get their first clients.
+
+    Automatic DMs: OFF
+    Automatic comments: OFF
+    """
+
+    # ------------------------------------------------------------
+    # Default target
+    # ------------------------------------------------------------
+
+    if not topic:
+
+        topic = (
+            "beginner AI freelancers "
+            "struggling to get first clients"
+        )
+
+    # ------------------------------------------------------------
+    # Search queries
+    # ------------------------------------------------------------
+
+    search_queries = [
+
+        "beginner AI freelancer first client",
+
+        "AI freelancer struggling to get clients",
+
+        "how to get first AI client",
+
+        "AI freelancer no clients",
+
+        "AI automation freelancer looking for clients",
+
+        "student AI freelancer clients",
+
+        "AI freelancer cold outreach no response",
+
+        "freelancer sent messages no clients",
+
+        "starting AI freelancing how to get clients",
+
+        "AI automation freelance client acquisition",
+
+        "beginner freelancer finding clients",
+
+        "AI freelancer struggling client acquisition"
+
+    ]
+
+    # If the user explicitly supplied a focused
+    # search topic, put it first.
+    if topic.strip():
+
+        custom_query = topic.strip()
+
+        if custom_query.lower() not in [
+            q.lower()
+            for q in search_queries
+        ]:
+            search_queries.insert(
+                0,
+                custom_query
+            )
+
+    # Limit to prevent excessive API requests.
+    search_queries = search_queries[:8]
+
     all_results = []
+
     source_errors = []
 
-    # Keep the hunt lightweight.
-    selected_queries = queries[:6]
+    # ------------------------------------------------------------
+    # Search public sources
+    # ------------------------------------------------------------
 
-    for query in selected_queries:
+    for query in search_queries:
 
-        searches = [
-            ("Reddit", _search_reddit),
-            ("Hacker News", _search_hackernews),
-            ("GitHub", _search_github),
+        sources = [
+
+            (
+                "Hacker News",
+                _search_hackernews
+            ),
+
+            (
+                "GitHub",
+                _search_github
+            ),
+
+            (
+                "Dev.to",
+                _search_devto
+            ),
+
+            (
+                "Reddit",
+                _search_reddit
+            )
+
         ]
 
-        for source_name, search_function in searches:
+        for source_name, source_function in sources:
 
             try:
 
-                found = await asyncio.to_thread(
-                    search_function,
+                results = source_function(
                     query
                 )
 
-                all_results.extend(found)
+                all_results.extend(
+                    results
+                )
 
             except Exception as error:
 
-                warning = (
+                error_text = (
                     f"{source_name}: "
-                    f"{str(error)[:140]}"
+                    f"{str(error)[:180]}"
                 )
 
-                if warning not in source_errors:
+                # Avoid printing the same
+                # source error repeatedly.
+                if not any(
+                    source_name in existing
+                    for existing in source_errors
+                ):
                     source_errors.append(
-                        warning
+                        error_text
                     )
 
-    # Remove duplicates.
-    unique_results = []
+    # ------------------------------------------------------------
+    # Score + deduplicate
+    # ------------------------------------------------------------
+
+    scored = []
+
     seen_urls = set()
 
     for result in all_results:
 
         url = (
-            result.get("url")
+            result.get(
+                "url",
+                ""
+            )
             or ""
         ).strip()
 
@@ -1070,153 +1398,184 @@ async def hunt_public_prospects(
 
         seen_urls.add(url)
 
-        unique_results.append(
+        signal, score = score_prospect(
             result
         )
 
-    # Score.
-    scored = []
+        if signal == "🔴 LOW":
+            continue
 
-    for result in unique_results:
+        result["signal"] = signal
+        result["signal_score"] = score
 
-        result = score_prospect(
-            result,
-            target
+        scored.append(
+            result
         )
 
-        if result["signal"] != "🔴 LOW":
-            scored.append(result)
-
     scored.sort(
-        key=lambda item: (
-            item.get(
+        key=lambda result: (
+            result.get(
                 "signal_score",
                 0
             ),
-            item.get(
+            result.get(
                 "score",
                 0
-            ),
+            )
         ),
         reverse=True
     )
 
-    return {
-        "queries": selected_queries,
-        "results": scored[:12],
-        "errors": source_errors,
-    }
+    prospects = scored[:10]
 
+    # ============================================================
+    # NO RESULTS
+    # ============================================================
 
-# ================================================================
-# 13. FORMAT HUNT RESULTS
-# ================================================================
+    if not prospects:
 
-def format_hunt_results(
-    hunt_data,
-    project,
-    target
-):
+        lines = [
 
-    results = hunt_data["results"]
-
-    lines = [
-        "🎯 11HUNT PROSPECT DISCOVERY",
-        "",
-        "Mode: Evidence-first public discovery",
-        "Automatic DMs: OFF",
-        "Automatic comments: OFF",
-        "",
-        f"TARGET:",
-        target[:600],
-        "",
-        "────────────────────",
-        "",
-    ]
-
-    if not results:
-
-        lines.extend([
+            "🎯 11HUNT PROSPECT DISCOVERY",
+            "",
+            "Mode: Evidence-first public discovery",
+            "",
+            "Automatic DMs: OFF",
+            "Automatic comments: OFF",
+            "",
+            "TARGET:",
+            "Beginner AI freelancers struggling to get their first clients",
+            "",
+            "────────────────────",
+            "",
             "No medium/high prospect signals were found.",
             "",
             "This does NOT mean there are no prospects.",
-            "It means the current public search did not find enough evidence.",
+            "",
+            "It means the current public search did not find enough",
+            "evidence matching the target.",
             "",
             "Try:",
+            "",
             "/hunt students freelancers",
+            "",
             "/hunt AI freelancers looking for clients",
+            "",
             "/hunt people struggling with client acquisition",
-        ])
+            "",
+            "Sources searched:",
+            "• Hacker News",
+            "• GitHub",
+            "• Dev.to",
+            "• Reddit",
+        ]
 
-        if hunt_data["errors"]:
+        if source_errors:
 
             lines.extend([
                 "",
-                "SOURCE WARNINGS:"
+                "SOURCE STATUS:"
             ])
 
-            for error in hunt_data["errors"]:
+            for error in source_errors:
                 lines.append(
                     f"• {error}"
                 )
 
         return "\n".join(lines)
 
-    for index, result in enumerate(
-        results,
+    # ============================================================
+    # RESULTS
+    # ============================================================
+
+    lines = [
+
+        "🎯 11HUNT PROSPECT DISCOVERY",
+        "",
+        "Mode: Evidence-first public discovery",
+        "",
+        "Automatic DMs: OFF",
+        "Automatic comments: OFF",
+        "",
+        "TARGET:",
+        "Beginner AI freelancers struggling to get their first clients",
+        "",
+        "────────────────────",
+        "",
+        f"Found {len(prospects)} potential public signals.",
+        "",
+        "IMPORTANT:",
+        "These are signals, NOT confirmed prospects.",
+        "Open the source and manually validate before contacting.",
+        ""
+
+    ]
+
+    for index, prospect in enumerate(
+        prospects,
         1
     ):
 
         evidence = (
-            result.get("evidence")
-            or "No text excerpt available."
-        )
-
-        matched = ", ".join(
-            result.get(
-                "matched_signals",
-                []
+            prospect.get(
+                "evidence"
             )
+            or
+            "No excerpt available."
         )
 
         lines.extend([
-            f"{index}. {result['signal']} "
-            f"— {result['person']}",
-            f"Platform: {result['platform']}",
-            f"POST: {result['title']}",
-            f"EVIDENCE: {evidence[:450]}",
-            f"SIGNAL: {matched or 'Context requires review'}",
-            f"URL: {result['url']}",
-            f"CONTACT: {result['contact']}",
-            "",
+
+            f"{index}. {prospect['signal']} "
+            f"— {prospect['person']} "
+            f"({prospect['platform']})",
+
+            f"POST: {prospect.get('title', 'Untitled')}",
+
+            f"EVIDENCE: {evidence}",
+
+            f"URL: {prospect.get('url', '')}",
+
+            f"CONTACT: {prospect.get('contact', 'UNKNOWN')}",
+
+            f"SIGNAL SCORE: {prospect.get('signal_score', 0)}",
+
+            ""
+
         ])
 
     lines.extend([
+
         "────────────────────",
-        "",
-        "NEXT STEP",
-        "",
-        "Open the strongest candidates.",
-        "",
+
+        "NEXT STEP:",
+
+        "Open the strongest 3 candidates.",
+
+        "Read their full post/profile.",
+
         "Then use:",
+
         "/outreach",
+
+        "Paste the actual post/profile text.",
+
         "",
-        "Paste the post/profile text.",
+        "11Hunt will analyze the evidence and prepare",
+        "a research comment + DM for YOUR approval.",
         "",
-        "11Hunt will analyze the candidate and prepare",
-        "a research comment + DM + follow-up.",
-        "",
-        "You approve and send it yourself.",
+        "No automatic messages are sent."
+
     ])
 
-    if hunt_data["errors"]:
+    if source_errors:
 
         lines.extend([
             "",
             "SOURCE WARNINGS:"
         ])
 
-        for error in hunt_data["errors"]:
+        for error in source_errors:
             lines.append(
                 f"• {error}"
             )
@@ -1225,7 +1584,7 @@ def format_hunt_results(
 
 
 # ================================================================
-# 14. TELEGRAM KEYBOARD
+# 20. TELEGRAM KEYBOARD
 # ================================================================
 
 def get_keyboard(
@@ -1234,84 +1593,99 @@ def get_keyboard(
 
     if status in [
         "🔴 UNVALIDATED",
-        "🟡 SIGNAL FOUND",
+        "🟡 SIGNAL FOUND"
     ]:
 
         return InlineKeyboardMarkup([
+
             [
                 InlineKeyboardButton(
-                    "🎯 Validate",
+                    "🎯 Validate Opportunity",
                     callback_data="btn_validate"
                 ),
+
                 InlineKeyboardButton(
                     "👥 Find Customers",
                     callback_data="btn_find_customers"
-                ),
+                )
             ],
+
             [
                 InlineKeyboardButton(
                     "🔎 Hunt Prospects",
                     callback_data="btn_hunt"
                 ),
+
                 InlineKeyboardButton(
-                    "💬 Outreach",
+                    "💬 Outreach Assistant",
                     callback_data="btn_outreach"
-                ),
+                )
             ],
+
             [
                 InlineKeyboardButton(
-                    "📥 Enter Findings",
+                    "📥 Enter Discovery Findings",
                     callback_data="btn_enter_findings"
                 ),
+
                 InlineKeyboardButton(
-                    "🥊 Challenge",
+                    "🥊 Challenge Idea",
                     callback_data="btn_challenge"
-                ),
+                )
             ],
+
             [
                 InlineKeyboardButton(
-                    "🧪 Experiment",
+                    "🧪 Design Experiment",
                     callback_data="btn_experiment"
                 ),
+
                 InlineKeyboardButton(
                     "🔄 Next Opportunity",
                     callback_data="btn_next_opp"
-                ),
-            ],
+                )
+            ]
+
         ])
 
     return InlineKeyboardMarkup([
+
         [
             InlineKeyboardButton(
-                "📥 Enter Findings",
+                "📥 Enter Discovery Findings",
                 callback_data="btn_enter_findings"
             ),
+
             InlineKeyboardButton(
-                "🧪 Experiment",
+                "🧪 Design Experiment",
                 callback_data="btn_experiment"
-            ),
+            )
         ],
+
         [
             InlineKeyboardButton(
-                "🛠️ Plan MVP",
+                "🛠️ Plan MVP Sprint",
                 callback_data="btn_build_mvp"
             ),
+
             InlineKeyboardButton(
-                "💼 Sales",
+                "💼 Sales & Conversion",
                 callback_data="btn_sales"
-            ),
+            )
         ],
+
         [
             InlineKeyboardButton(
                 "🔄 Next Opportunity",
                 callback_data="btn_next_opp"
-            ),
-        ],
+            )
+        ]
+
     ])
 
 
 # ================================================================
-# 15. /START
+# 21. /START
 # ================================================================
 
 async def start_command(
@@ -1321,126 +1695,26 @@ async def start_command(
 
     chat_id = update.effective_chat.id
 
-    if "project" not in context.user_data:
-        context.user_data["project"] = DEFAULT_PROJECT
-
-    if "target" not in context.user_data:
-        context.user_data["target"] = DEFAULT_TARGET
-
     await update.message.reply_text(
-        f"""
-👋 11Hunt Prospect Discovery Agent
 
-Evidence first.
-Human approval required.
-No automatic DMs.
+        "👋 11Hunt Evidence-First Prospect Discovery is active!\n\n"
 
-Your Chat ID:
-{chat_id}
+        "🎯 Target:\n"
+        "Beginner AI freelancers struggling to get their first clients.\n\n"
 
-COMMANDS
+        "Commands:\n"
+        "/pitch — Generate opportunity hypothesis\n"
+        "/hunt — Find public prospect signals\n"
+        "/outreach — Analyze a candidate manually\n\n"
 
-/pitch
-Generate an opportunity.
+        f"Chat ID: `{chat_id}`",
 
-/project
-Set the project you want prospects for.
-
-/target
-Set who you want to find.
-
-/hunt
-Find public prospect signals.
-
-/outreach
-Analyze a candidate and create research outreach.
-
-/start
-Show this menu.
-"""
+        parse_mode="Markdown"
     )
 
 
 # ================================================================
-# 16. /PROJECT
-# ================================================================
-
-async def project_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    project_text = " ".join(
-        context.args
-    ).strip()
-
-    if not project_text:
-
-        current = context.user_data.get(
-            "project",
-            DEFAULT_PROJECT
-        )
-
-        await update.message.reply_text(
-            "📌 CURRENT PROJECT\n\n"
-            + current
-            + "\n\n"
-            "To change it:\n"
-            "/project Your project description"
-        )
-
-        return
-
-    context.user_data["project"] = project_text
-
-    await update.message.reply_text(
-        "✅ Project context updated.\n\n"
-        f"{project_text}\n\n"
-        "Now use /target and /hunt."
-    )
-
-
-# ================================================================
-# 17. /TARGET
-# ================================================================
-
-async def target_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    target_text = " ".join(
-        context.args
-    ).strip()
-
-    if not target_text:
-
-        current = context.user_data.get(
-            "target",
-            DEFAULT_TARGET
-        )
-
-        await update.message.reply_text(
-            "🎯 CURRENT TARGET\n\n"
-            + current
-            + "\n\n"
-            "To change it:\n"
-            "/target beginner AI freelancers looking for clients"
-        )
-
-        return
-
-    context.user_data["target"] = target_text
-
-    await update.message.reply_text(
-        "✅ Target updated.\n\n"
-        f"{target_text}\n\n"
-        "Use /hunt to search for them."
-    )
-
-
-# ================================================================
-# 18. /PITCH
+# 22. /PITCH
 # ================================================================
 
 async def pitch_command(
@@ -1448,30 +1722,37 @@ async def pitch_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    status_msg = await update.message.reply_text(
-        "🔎 Scouting a fresh opportunity..."
+    status_message = await update.message.reply_text(
+        "🔎 Scouting a fresh market opportunity..."
     )
 
     try:
 
-        pitch = await asyncio.to_thread(
+        pitch_text = await asyncio.to_thread(
+
             generate_gemini_content,
-            "Scout one fresh unvalidated opportunity.",
-            SYSTEM_PROMPT
+
+            prompt=(
+                "Scout a fresh unvalidated opportunity "
+                "related to beginner AI freelancers, "
+                "AI builders, or client acquisition."
+            ),
+
+            system_instruction=SYSTEM_PROMPT
         )
 
         context.user_data[
             "last_idea"
-        ] = pitch
+        ] = pitch_text
 
         context.user_data[
             "validation_status"
         ] = "🔴 UNVALIDATED"
 
-        await status_msg.delete()
+        await status_message.delete()
 
         await update.message.reply_text(
-            pitch,
+            text=pitch_text,
             reply_markup=get_keyboard(
                 "🔴 UNVALIDATED"
             )
@@ -1479,15 +1760,206 @@ async def pitch_command(
 
     except Exception as error:
 
-        await status_msg.delete()
+        await status_message.delete()
 
         await update.message.reply_text(
-            f"❌ Error:\n{error}"
+            f"❌ Error: {str(error)}"
         )
 
 
 # ================================================================
-# 19. /HUNT
+# 23. DAILY PITCH
+# ================================================================
+
+async def scheduled_daily_pitch(
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not MY_TELEGRAM_CHAT_ID:
+        return
+
+    try:
+
+        pitch_text = await asyncio.to_thread(
+
+            generate_gemini_content,
+
+            prompt=(
+                "Scout a fresh unvalidated opportunity "
+                "for beginner AI freelancers or "
+                "early AI builders."
+            ),
+
+            system_instruction=SYSTEM_PROMPT
+        )
+
+        await context.bot.send_message(
+
+            chat_id=MY_TELEGRAM_CHAT_ID,
+
+            text=(
+                "☀️ TODAY'S 11HUNT OPPORTUNITY\n\n"
+                f"{pitch_text}"
+            ),
+
+            reply_markup=get_keyboard(
+                "🔴 UNVALIDATED"
+            )
+        )
+
+    except Exception as error:
+
+        print(
+            f"Daily Scout Push Error: {error}"
+        )
+
+
+# ================================================================
+# 24. /OUTREACH
+# ================================================================
+
+async def outreach_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    last_idea = context.user_data.get(
+        "last_idea"
+    )
+
+    if not last_idea:
+
+        await update.message.reply_text(
+
+            "🛑 No active opportunity yet.\n\n"
+
+            "Use /pitch first, then use "
+            "🎯 Outreach Assistant."
+
+        )
+
+        return
+
+    context.user_data[
+        "awaiting_candidate"
+    ] = True
+
+    await update.message.reply_text(
+
+        "🎯 OUTREACH ASSISTANT\n\n"
+
+        "Paste a Reddit/X post, comment, "
+        "profile text, GitHub discussion, "
+        "or candidate description.\n\n"
+
+        "I'll analyze:\n"
+        "• relevance\n"
+        "• evidence\n"
+        "• hypothesis\n"
+        "• unknowns\n"
+        "• public comment\n"
+        "• research DM\n"
+        "• follow-up question\n\n"
+
+        "⚠️ Nothing will be sent automatically."
+
+    )
+
+
+# ================================================================
+# 25. OUTREACH ANALYSIS
+# ================================================================
+
+async def outreach_analysis(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    candidate = update.message.text
+
+    last_idea = context.user_data.get(
+        "last_idea",
+        "Beginner AI freelancer client acquisition"
+    )
+
+    status_message = await update.message.reply_text(
+        "🔎 Evaluating prospect evidence..."
+    )
+
+    try:
+
+        prompt = OUTREACH_PROMPT.format(
+
+            idea_context=last_idea,
+
+            candidate=candidate
+
+        )
+
+        result = await asyncio.to_thread(
+
+            generate_gemini_content,
+
+            prompt=prompt,
+
+            system_instruction=(
+                "You are an evidence-first "
+                "customer discovery and "
+                "outreach assistant."
+            )
+        )
+
+        prospects = context.user_data.setdefault(
+            "outreach_prospects",
+            []
+        )
+
+        prospects.append({
+
+            "candidate": candidate,
+
+            "analysis": result,
+
+            "status": "prepared"
+
+        })
+
+        context.user_data[
+            "last_candidate"
+        ] = candidate
+
+        context.user_data[
+            "awaiting_candidate"
+        ] = False
+
+        await status_message.delete()
+
+        await update.message.reply_text(
+
+            "🎯 PROSPECT ANALYSIS\n\n"
+
+            f"{result}\n\n"
+
+            f"📌 Saved as prospect "
+            f"#{len(prospects)} in this Telegram session."
+
+        )
+
+    except Exception as error:
+
+        context.user_data[
+            "awaiting_candidate"
+        ] = False
+
+        await status_message.delete()
+
+        await update.message.reply_text(
+            f"❌ Error: {str(error)}"
+        )
+
+
+# ================================================================
+# 26. /HUNT
 # ================================================================
 
 async def hunt_command(
@@ -1495,60 +1967,48 @@ async def hunt_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    project = context.user_data.get(
-        "project",
-        DEFAULT_PROJECT
-    )
-
-    target = context.user_data.get(
-        "target",
-        DEFAULT_TARGET
-    )
-
-    # Optional custom hunt:
-    # /hunt AI freelancers struggling to get clients
-    custom_query = " ".join(
+    topic = " ".join(
         context.args
     ).strip()
 
-    if custom_query:
+    if not topic:
 
-        target = custom_query
+        topic = (
+            "beginner AI freelancers "
+            "struggling to get first clients"
+        )
 
-        context.user_data[
-            "target"
-        ] = custom_query
+    status_message = await update.message.reply_text(
 
-    status_msg = await update.message.reply_text(
-        "🔎 11Hunt is searching public discussions...\n\n"
-        "Sources:\n"
-        "• Reddit\n"
-        "• Hacker News\n"
-        "• GitHub\n\n"
-        "Finding people, not generic articles."
+        "🔎 11Hunt is searching public sources...\n\n"
+
+        "Target:\n"
+        "Beginner AI freelancers struggling "
+        "to get their first clients.\n\n"
+
+        "Automatic DMs: OFF\n"
+        "Automatic comments: OFF"
+
     )
 
     try:
 
-        hunt_data = await hunt_public_prospects(
-            project,
-            target
+        result = await asyncio.to_thread(
+
+            hunt_public_web,
+
+            topic
+
         )
 
-        output = format_hunt_results(
-            hunt_data,
-            project,
-            target
-        )
+        await status_message.delete()
 
-        await status_msg.delete()
-
-        # Telegram limit protection.
+        # Telegram practical message size.
         chunks = [
-            output[i:i + 3800]
+            result[i:i + 3800]
             for i in range(
                 0,
-                len(output),
+                len(result),
                 3800
             )
         ]
@@ -1561,187 +2021,18 @@ async def hunt_command(
 
     except Exception as error:
 
-        await status_msg.delete()
+        await status_message.delete()
 
         await update.message.reply_text(
-            f"❌ Hunt failed:\n{error}"
+
+            "❌ Hunt failed:\n"
+            f"{str(error)}"
+
         )
 
 
 # ================================================================
-# 20. /OUTREACH
-# ================================================================
-
-async def outreach_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    project = context.user_data.get(
-        "project",
-        DEFAULT_PROJECT
-    )
-
-    context.user_data[
-        "awaiting_candidate"
-    ] = True
-
-    await update.message.reply_text(
-        """
-🎯 OUTREACH ASSISTANT
-
-Paste:
-
-• Reddit post
-• Reddit comment
-• X post
-• LinkedIn post text
-• profile description
-• job post
-• founder post
-• candidate description
-
-I will analyze:
-
-🔎 Evidence
-🟡 Inference
-🔴 Unknown
-🎯 Relevance
-💬 Public comment
-📩 Research DM
-❓ Follow-up
-
-⚠️ I will NOT automatically send anything.
-
-You approve and send the message yourself.
-"""
-    )
-
-
-# ================================================================
-# 21. OUTREACH ANALYSIS
-# ================================================================
-
-async def outreach_analysis(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    candidate = (
-        update.message.text
-        or ""
-    ).strip()
-
-    project = context.user_data.get(
-        "project",
-        DEFAULT_PROJECT
-    )
-
-    target = context.user_data.get(
-        "target",
-        DEFAULT_TARGET
-    )
-
-    status_msg = await update.message.reply_text(
-        "🔎 Analyzing candidate evidence..."
-    )
-
-    try:
-
-        prompt = OUTREACH_PROMPT.format(
-            project=project,
-            target=target,
-            candidate=candidate
-        )
-
-        result = await asyncio.to_thread(
-            generate_gemini_content,
-            prompt,
-            "You are an evidence-first customer discovery outreach assistant."
-        )
-
-        prospects = context.user_data.setdefault(
-            "outreach_prospects",
-            []
-        )
-
-        prospects.append({
-            "candidate": candidate,
-            "analysis": result,
-            "status": "prepared"
-        })
-
-        context.user_data[
-            "last_candidate"
-        ] = candidate
-
-        context.user_data[
-            "awaiting_candidate"
-        ] = False
-
-        await status_msg.delete()
-
-        await update.message.reply_text(
-            "🎯 PROSPECT ANALYSIS\n\n"
-            + result
-            + "\n\n"
-            "⚠️ HUMAN APPROVAL REQUIRED\n"
-            "Review everything before sending."
-        )
-
-    except Exception as error:
-
-        context.user_data[
-            "awaiting_candidate"
-        ] = False
-
-        await status_msg.delete()
-
-        await update.message.reply_text(
-            f"❌ Error:\n{error}"
-        )
-
-
-# ================================================================
-# 22. DAILY OPPORTUNITY
-# ================================================================
-
-async def scheduled_daily_pitch(
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not MY_TELEGRAM_CHAT_ID:
-        return
-
-    try:
-
-        pitch = await asyncio.to_thread(
-            generate_gemini_content,
-            "Scout one fresh unvalidated market opportunity.",
-            SYSTEM_PROMPT
-        )
-
-        await context.bot.send_message(
-            chat_id=MY_TELEGRAM_CHAT_ID,
-            text=(
-                "☀️ TODAY'S OPPORTUNITY\n\n"
-                + pitch
-            ),
-            reply_markup=get_keyboard(
-                "🔴 UNVALIDATED"
-            )
-        )
-
-    except Exception as error:
-
-        print(
-            "Daily opportunity error:",
-            error
-        )
-
-
-# ================================================================
-# 23. BUTTON HANDLER
+# 27. BUTTON HANDLER
 # ================================================================
 
 async def button_handler(
@@ -1758,7 +2049,7 @@ async def button_handler(
 
     last_idea = context.user_data.get(
         "last_idea",
-        "Market Opportunity"
+        "Beginner AI freelancer client acquisition"
     )
 
     current_status = context.user_data.get(
@@ -1773,22 +2064,26 @@ async def button_handler(
     if query.data == "btn_hunt":
 
         await query.message.reply_text(
-            """
-🔎 11HUNT PROSPECT HUNT
 
-The bot will search public discussions for people
-matching your current target.
+            "🔎 11HUNT PROSPECT DISCOVERY\n\n"
 
-Use:
+            "Target:\n"
+            "Beginner AI freelancers struggling "
+            "to get their first clients.\n\n"
 
-/hunt
+            "Automatic DMs: OFF\n"
+            "Automatic comments: OFF\n\n"
 
-Or specify a target:
+            "Run:\n"
+            "`/hunt`\n\n"
 
-/hunt AI freelancers struggling to get clients
+            "Or focus the search:\n"
+            "`/hunt AI freelancers looking for clients`\n\n"
 
-The bot does NOT automatically contact anyone.
-"""
+            "`/hunt students struggling to get clients`",
+
+            parse_mode="Markdown"
+
         )
 
     # ------------------------------------------------------------
@@ -1802,22 +2097,21 @@ The bot does NOT automatically contact anyone.
         ] = True
 
         await query.message.reply_text(
-            """
-🎯 OUTREACH ASSISTANT
 
-Paste the candidate's post/profile text.
+            "🎯 OUTREACH ASSISTANT\n\n"
 
-I'll analyze:
+            "Paste the actual public post/profile text.\n\n"
 
-• Evidence
-• Relevance
-• Unknowns
-• Public comment
-• Research DM
-• Follow-up
+            "I'll prepare:\n"
+            "• Evidence\n"
+            "• Hypothesis\n"
+            "• Unknowns\n"
+            "• Public comment\n"
+            "• Research DM\n"
+            "• Follow-up question\n\n"
 
-You approve before sending.
-"""
+            "⚠️ You approve and send manually."
+
         )
 
     # ------------------------------------------------------------
@@ -1826,24 +2120,33 @@ You approve before sending.
 
     elif query.data == "btn_validate":
 
-        status_msg = await query.message.reply_text(
+        status_message = await query.message.reply_text(
             "🎯 Building customer discovery plan..."
         )
 
         try:
 
             prompt = VALIDATION_PROMPT.format(
+
                 idea_context=last_idea,
+
                 current_status=current_status
+
             )
 
             result = await asyncio.to_thread(
+
                 generate_gemini_content,
-                prompt,
-                "You are a Customer Discovery Expert."
+
+                prompt=prompt,
+
+                system_instruction=(
+                    "You are a Customer Discovery Expert."
+                )
+
             )
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
                 result
@@ -1851,10 +2154,10 @@ You approve before sending.
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
     # ------------------------------------------------------------
@@ -1863,34 +2166,29 @@ You approve before sending.
 
     elif query.data == "btn_find_customers":
 
-        project = context.user_data.get(
-            "project",
-            DEFAULT_PROJECT
-        )
-
-        target = context.user_data.get(
-            "target",
-            DEFAULT_TARGET
-        )
-
-        status_msg = await query.message.reply_text(
-            "👥 Building customer discovery strategy..."
+        status_message = await query.message.reply_text(
+            "👥 Finding target customer channels..."
         )
 
         try:
 
             prompt = FIND_CUSTOMERS_PROMPT.format(
-                project=project,
-                target=target
+                idea_context=last_idea
             )
 
             result = await asyncio.to_thread(
+
                 generate_gemini_content,
-                prompt,
-                "You are a Lead Generation Specialist."
+
+                prompt=prompt,
+
+                system_instruction=(
+                    "You are a Lead Generation Specialist."
+                )
+
             )
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
                 result
@@ -1898,10 +2196,10 @@ You approve before sending.
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
     # ------------------------------------------------------------
@@ -1915,20 +2213,18 @@ You approve before sending.
         ] = True
 
         await query.message.reply_text(
-            """
-📥 DISCOVERY FINDINGS
 
-Send your interview/discovery notes.
+            "📥 DISCOVERY FINDINGS INPUT\n\n"
 
-Include:
+            "Send your notes.\n\n"
 
-1. Who you talked to
-2. What they said
-3. Their current workflow
-4. Problems they described
-5. Existing workaround
-6. Any pricing/willingness-to-pay signal
-"""
+            "Include:\n"
+            "1. Number of people interviewed\n"
+            "2. What they said\n"
+            "3. Their current workflow\n"
+            "4. What they have tried\n"
+            "5. Any willingness-to-pay evidence"
+
         )
 
     # ------------------------------------------------------------
@@ -1937,7 +2233,7 @@ Include:
 
     elif query.data == "btn_challenge":
 
-        status_msg = await query.message.reply_text(
+        status_message = await query.message.reply_text(
             "🥊 Stress-testing the hypothesis..."
         )
 
@@ -1948,12 +2244,18 @@ Include:
             )
 
             result = await asyncio.to_thread(
+
                 generate_gemini_content,
-                prompt,
-                "You are a skeptical startup advisor."
+
+                prompt=prompt,
+
+                system_instruction=(
+                    "You are a Devil's Advocate Investor."
+                )
+
             )
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
                 result
@@ -1961,10 +2263,10 @@ Include:
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
     # ------------------------------------------------------------
@@ -1973,29 +2275,38 @@ Include:
 
     elif query.data == "btn_experiment":
 
-        findings = context.user_data.get(
-            "last_findings",
-            "No discovery findings recorded yet."
-        )
-
-        status_msg = await query.message.reply_text(
+        status_message = await query.message.reply_text(
             "🧪 Designing smallest demand experiment..."
         )
 
         try:
 
+            user_findings = context.user_data.get(
+                "last_findings",
+                "No discovery findings recorded yet."
+            )
+
             prompt = EXPERIMENT_PROMPT.format(
+
                 idea_context=last_idea,
-                user_findings=findings
+
+                user_findings=user_findings
+
             )
 
             result = await asyncio.to_thread(
+
                 generate_gemini_content,
-                prompt,
-                "You are a Lean Startup Experiment Designer."
+
+                prompt=prompt,
+
+                system_instruction=(
+                    "You are a Lean Startup Experiment Designer."
+                )
+
             )
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
                 result
@@ -2003,10 +2314,10 @@ Include:
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
     # ------------------------------------------------------------
@@ -2017,49 +2328,46 @@ Include:
 
         if current_status in [
             "🔴 UNVALIDATED",
-            "🟡 SIGNAL FOUND",
+            "🟡 SIGNAL FOUND"
         ]:
 
             await query.message.reply_text(
-                f"""
-🛑 BUILD LOCKED
 
-Current status:
-{current_status}
+                f"🛑 BUILD LOCKED\n\n"
+                f"Current status: {current_status}\n\n"
+                "Collect more evidence before building."
 
-Collect evidence first.
-
-Recommended sequence:
-
-1. Find people
-2. Talk to them
-3. Record evidence
-4. Validate the problem
-5. Run a demand experiment
-6. Then build
-"""
             )
 
             return
 
-        status_msg = await query.message.reply_text(
-            "⚙️ Building lean MVP blueprint..."
+        status_message = await query.message.reply_text(
+            "⚙️ Creating lean MVP blueprint..."
         )
 
         try:
 
             prompt = MVP_PROMPT.format(
+
                 idea_context=last_idea,
+
                 current_status=current_status
+
             )
 
             result = await asyncio.to_thread(
+
                 generate_gemini_content,
-                prompt,
-                "You are a Technical Product Architect."
+
+                prompt=prompt,
+
+                system_instruction=(
+                    "You are a Technical Product Architect."
+                )
+
             )
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
                 result
@@ -2067,10 +2375,10 @@ Recommended sequence:
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
     # ------------------------------------------------------------
@@ -2081,45 +2389,51 @@ Recommended sequence:
 
         if current_status in [
             "🔴 UNVALIDATED",
-            "🟡 SIGNAL FOUND",
+            "🟡 SIGNAL FOUND"
         ]:
 
             await query.message.reply_text(
-                f"""
-🛑 SALES LOCKED
 
-Current status:
-{current_status}
+                f"🛑 SALES LOCKED\n\n"
+                f"Current status: {current_status}\n\n"
+                "Validate the problem first."
 
-Validate the problem and test demand first.
-"""
             )
 
             return
 
-        findings = context.user_data.get(
-            "last_findings",
-            "Validated customer problem."
-        )
-
-        status_msg = await query.message.reply_text(
-            "💼 Building first-customer strategy..."
+        status_message = await query.message.reply_text(
+            "💼 Creating first-customer strategy..."
         )
 
         try:
 
+            user_findings = context.user_data.get(
+                "last_findings",
+                "Validated problem."
+            )
+
             prompt = SALES_PROMPT.format(
+
                 idea_context=last_idea,
-                user_findings=findings
+
+                user_findings=user_findings
+
             )
 
             result = await asyncio.to_thread(
+
                 generate_gemini_content,
-                prompt,
-                "You are a B2B Sales Strategist."
+
+                prompt=prompt,
+
+                system_instruction=(
+                    "You are a B2B Sales Strategist."
+                )
+
             )
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
                 result
@@ -2127,10 +2441,10 @@ Validate the problem and test demand first.
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
     # ------------------------------------------------------------
@@ -2139,46 +2453,57 @@ Validate the problem and test demand first.
 
     elif query.data == "btn_next_opp":
 
-        status_msg = await query.message.reply_text(
-            "🔄 Scouting another opportunity..."
+        status_message = await query.message.reply_text(
+            "🔄 Scouting next opportunity..."
         )
 
         try:
 
-            pitch = await asyncio.to_thread(
+            pitch_text = await asyncio.to_thread(
+
                 generate_gemini_content,
-                "Scout one fresh unvalidated market opportunity.",
-                SYSTEM_PROMPT
+
+                prompt=(
+                    "Scout a fresh unvalidated "
+                    "market opportunity for "
+                    "beginner AI freelancers."
+                ),
+
+                system_instruction=SYSTEM_PROMPT
+
             )
 
             context.user_data[
                 "last_idea"
-            ] = pitch
+            ] = pitch_text
 
             context.user_data[
                 "validation_status"
             ] = "🔴 UNVALIDATED"
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                pitch,
+
+                text=pitch_text,
+
                 reply_markup=get_keyboard(
                     "🔴 UNVALIDATED"
                 )
+
             )
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await query.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
 
 # ================================================================
-# 24. GENERAL TEXT REPLY HANDLER
+# 28. TEXT REPLY HANDLER
 # ================================================================
 
 async def reply_handler(
@@ -2187,7 +2512,7 @@ async def reply_handler(
 ):
 
     # ------------------------------------------------------------
-    # Candidate for outreach
+    # Candidate awaiting
     # ------------------------------------------------------------
 
     if context.user_data.get(
@@ -2202,7 +2527,7 @@ async def reply_handler(
         return
 
     # ------------------------------------------------------------
-    # Discovery findings
+    # Findings awaiting
     # ------------------------------------------------------------
 
     if context.user_data.get(
@@ -2213,18 +2538,15 @@ async def reply_handler(
             "awaiting_findings"
         ] = False
 
-        findings = (
-            update.message.text
-            or ""
-        )
+        user_findings = update.message.text
 
         context.user_data[
             "last_findings"
-        ] = findings
+        ] = user_findings
 
         last_idea = context.user_data.get(
             "last_idea",
-            "Market Opportunity"
+            "Beginner AI freelancer client acquisition"
         )
 
         current_status = context.user_data.get(
@@ -2232,22 +2554,33 @@ async def reply_handler(
             "🔴 UNVALIDATED"
         )
 
-        status_msg = await update.message.reply_text(
+        status_message = await update.message.reply_text(
             "🧐 Evaluating discovery evidence..."
         )
 
         try:
 
             prompt = ANALYZE_FINDINGS_PROMPT.format(
+
                 idea_context=last_idea,
+
                 current_status=current_status,
-                user_findings=findings
+
+                user_findings=user_findings
+
             )
 
             evaluation = await asyncio.to_thread(
+
                 generate_gemini_content,
-                prompt,
-                "You are a Truth-Seeking Startup Evaluator."
+
+                prompt=prompt,
+
+                system_instruction=(
+                    "You are a Truth-Seeking "
+                    "Startup Evaluator."
+                )
+
             )
 
             # ----------------------------------------------------
@@ -2270,39 +2603,39 @@ async def reply_handler(
 
             elif "❌ KILL" in evaluation:
 
-                new_status = "❌ KILL"
+                new_status = "❌ KILLED"
 
             context.user_data[
                 "validation_status"
             ] = new_status
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await update.message.reply_text(
-                f"""
-📋 DISCOVERY EVALUATION
 
-UPDATED STATUS:
-{new_status}
+                "📋 EVALUATION & STATUS UPDATE\n\n"
 
-{evaluation}
-""",
+                f"Updated Status: {new_status}\n\n"
+
+                f"{evaluation}",
+
                 reply_markup=get_keyboard(
                     new_status
                 )
+
             )
 
         except Exception as error:
 
-            await status_msg.delete()
+            await status_message.delete()
 
             await update.message.reply_text(
-                f"❌ Error:\n{error}"
+                f"❌ Error: {str(error)}"
             )
 
 
 # ================================================================
-# 25. APPLICATION STARTUP
+# 29. APPLICATION STARTUP
 # ================================================================
 
 def main():
@@ -2310,11 +2643,16 @@ def main():
     application = (
         Application
         .builder()
-        .token(TELEGRAM_BOT_TOKEN)
+        .token(
+            TELEGRAM_BOT_TOKEN
+        )
         .build()
     )
 
+    # ------------------------------------------------------------
     # Commands
+    # ------------------------------------------------------------
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -2343,47 +2681,77 @@ def main():
         )
     )
 
-    application.add_handler(
-        CommandHandler(
-            "project",
-            project_command
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "target",
-            target_command
-        )
-    )
-
+    # ------------------------------------------------------------
     # Buttons
+    # ------------------------------------------------------------
+
     application.add_handler(
         CallbackQueryHandler(
             button_handler
         )
     )
 
-    # Normal messages
+    # ------------------------------------------------------------
+    # Normal text messages
+    # ------------------------------------------------------------
+
     application.add_handler(
+
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             reply_handler
         )
+
+    )
+
+    # ------------------------------------------------------------
+    # Daily opportunity
+    # ------------------------------------------------------------
+
+    if MY_TELEGRAM_CHAT_ID:
+
+        india_timezone = pytz.timezone(
+            "Asia/Kolkata"
+        )
+
+        target_time = datetime.time(
+            hour=8,
+            minute=0,
+            second=0,
+            tzinfo=india_timezone
+        )
+
+        application.job_queue.run_daily(
+
+            scheduled_daily_pitch,
+
+            time=target_time
+
+        )
+
+    # ------------------------------------------------------------
+    # Start
+    # ------------------------------------------------------------
+
+    print(
+        "🚀 11Hunt Evidence-First Prospect Discovery running..."
     )
 
     print(
-        "🚀 11Hunt Prospect Discovery Agent running..."
+        "🎯 Target: Beginner AI freelancers struggling "
+        "to get their first clients"
     )
 
     print(
-        "✅ Commands:"
-        " /start"
-        " /pitch"
-        " /project"
-        " /target"
-        " /hunt"
-        " /outreach"
+        "🔒 Automatic DMs: OFF"
+    )
+
+    print(
+        "🔒 Automatic comments: OFF"
+    )
+
+    print(
+        "✅ Commands: /start /pitch /hunt /outreach"
     )
 
     application.run_polling(
@@ -2392,7 +2760,7 @@ def main():
 
 
 # ================================================================
-# 26. RUN
+# 30. RUN
 # ================================================================
 
 if __name__ == "__main__":
