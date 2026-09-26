@@ -282,31 +282,17 @@ Create:
 # 4. GEMINI
 # ================================================================
 
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
+
+
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
     last_error = None
 
-    try:
-        available_models = []
-
-        for m in ai_client.models.list():
-            model_id = m.name.replace("models/", "")
-            methods = getattr(m, "supported_generation_methods", []) or []
-
-            if "generateContent" in methods or not methods:
-                available_models.append(model_id)
-
-        available_models.sort(
-            key=lambda name: ("flash" not in name.lower(), name)
-        )
-
-    except Exception as list_error:
-        available_models = [
-            "gemini-2.5-flash",
-            "gemini-1.5-flash",
-        ]
-        last_error = list_error
-
-    for model in available_models:
+    for model in GEMINI_MODELS:
         try:
             response = ai_client.models.generate_content(
                 model=model,
@@ -330,7 +316,7 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
 # 5. PUBLIC WEB HELPERS
 # ================================================================
 
-def _fetch_json(url: str, timeout: int = 15):
+def _fetch_json(url: str, timeout: int = 8):
     req = Request(
         url,
         headers={
@@ -779,81 +765,83 @@ def deduplicate_candidates(candidates):
 # ================================================================
 
 def hunt_public_web(topic: str) -> str:
+    """
+    Evidence-first public prospect discovery.
 
-    # The user's topic can influence discovery,
-    # but the actual target remains strict.
+    No automatic DMs/comments.
+    No Gemini Search Grounding.
+    Uses targeted public searches and runs them concurrently so /hunt
+    does not sit waiting on one blocked source.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    topic = " ".join((topic or "").split())
 
     queries = [
-
-        # Direct first-client language
         '"first client" freelancer',
-        '"first customer" freelancer',
-        '"get my first client" freelancer',
-
-        # Acquisition struggles
-        '"struggling to get clients" freelancer',
         '"how to get clients" freelancer',
+        '"struggling to get clients" freelancer',
         '"finding clients" freelancer',
-        '"no clients" freelancer',
-
-        # Outreach
-        '"freelance outreach" client',
-        '"cold outreach" freelancer clients',
-        '"sent proposals" freelancer',
-
-        # AI-specific
+        '"freelance outreach" clients',
+        '"cold outreach" freelancer',
         '"AI freelancer" clients',
-        '"AI automation" freelancer clients',
         '"AI freelancer" "first client"',
         '"AI automation" "first client"',
-        '"AI agency" clients beginner',
+        '"no clients" freelancer',
+        '"first customer" freelancer',
+        '"client acquisition" freelancer',
+    ]
 
-        # Broader
-        '"freelancing" "first client"',
-        '"freelancer" "client acquisition"',
+    if topic and topic.lower() not in {
+        "beginner ai freelancers struggling to get first clients",
+        "beginner ai freelancers struggling to get their first clients",
+    }:
+        queries.append(f'"{topic}" freelancer clients')
+
+    queries = list(dict.fromkeys(queries))
+
+    searches = [
+        ("Reddit", _search_reddit),
+        ("Hacker News", _search_hackernews),
+        ("GitHub", _search_github),
+    ]
+
+    jobs = [
+        (source_name, search_function, query)
+        for query in queries
+        for source_name, search_function in searches
     ]
 
     all_results = []
     source_errors = []
 
-    for query in queries:
+    def run_search(job):
+        source_name, search_function, query = job
+        try:
+            return source_name, query, search_function(query), None
+        except Exception as error:
+            return source_name, query, [], str(error)[:180]
 
-        for source_name, search_function in [
-            ("Reddit", _search_reddit),
-            ("Hacker News", _search_hackernews),
-            ("GitHub", _search_github),
-        ]:
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(run_search, job) for job in jobs]
 
-            try:
-                results = search_function(query)
+        for future in as_completed(futures):
+            source_name, query, results, error = future.result()
+
+            if error:
+                warning = f"{source_name}: {error}"
+                if warning not in source_errors:
+                    source_errors.append(warning)
+            else:
                 all_results.extend(results)
 
-            except Exception as error:
-
-                message = (
-                    f"{source_name}: "
-                    f"{str(error)[:160]}"
-                )
-
-                if message not in source_errors:
-                    source_errors.append(message)
-
-    # ------------------------------------------------------------
-    # CLASSIFY
-    # ------------------------------------------------------------
-
     classified = []
-
     seen_urls = set()
 
     for result in all_results:
+        url = (result.get("url") or "").strip()
 
-        url = result.get("url", "").strip()
-
-        if not url:
-            continue
-
-        if url in seen_urls:
+        if not url or url in seen_urls:
             continue
 
         seen_urls.add(url)
@@ -863,15 +851,7 @@ def hunt_public_web(topic: str) -> str:
         if candidate:
             classified.append(candidate)
 
-    # ------------------------------------------------------------
-    # DEDUP PEOPLE
-    # ------------------------------------------------------------
-
     classified = deduplicate_candidates(classified)
-
-    # ------------------------------------------------------------
-    # SORT
-    # ------------------------------------------------------------
 
     classified.sort(
         key=lambda item: (
@@ -883,17 +863,9 @@ def hunt_public_web(topic: str) -> str:
 
     candidates = classified[:10]
 
-    # ------------------------------------------------------------
-    # EMPTY RESULT
-    # ------------------------------------------------------------
-
     if not candidates:
-
         warning_text = (
-            "\n".join(
-                f"• {warning}"
-                for warning in source_errors
-            )
+            "\n".join(f"• {warning}" for warning in source_errors)
             if source_errors
             else "No source errors reported."
         )
@@ -919,12 +891,7 @@ def hunt_public_web(topic: str) -> str:
             f"{warning_text}"
         )
 
-    # ------------------------------------------------------------
-    # OUTPUT
-    # ------------------------------------------------------------
-
     lines = [
-
         "🎯 11HUNT PROSPECT DISCOVERY",
         "",
         "Mode: Evidence-first public discovery",
@@ -943,55 +910,34 @@ def hunt_public_web(topic: str) -> str:
     ]
 
     for index, candidate in enumerate(candidates, 1):
-
-        evidence = (
-            candidate.get("evidence")
-            or "No excerpt available."
-        )
-
+        evidence = candidate.get("evidence") or "No excerpt available."
         why = candidate.get("why_matched", [])
 
         lines.extend([
-
-            f"{index}. {candidate['signal']} "
-            f"{candidate['signal_type']} — "
-            f"{candidate['person']} "
-            f"({candidate['platform']})",
-
+            f"{index}. {candidate['signal']} {candidate['signal_type']} — "
+            f"{candidate['person']} ({candidate['platform']})",
             f"POST: {candidate['title']}",
-
             "",
-
             "EVIDENCE:",
-
             evidence,
-
             "",
-
             "WHY IT MATCHED:",
-
         ])
 
         for reason in why:
             lines.append(f"• {reason}")
 
         lines.extend([
-
             "",
-
             f"URL: {candidate['url']}",
-
             f"CONTACT: {candidate['contact']}",
-
             f"SIGNAL SCORE: {candidate['signal_score']}",
-
             "",
             "────────────────────",
             "",
         ])
 
     lines.extend([
-
         "NEXT STEP:",
         "",
         "Open the strongest 3 candidates.",
@@ -1020,13 +966,7 @@ def hunt_public_web(topic: str) -> str:
     ])
 
     if source_errors:
-
-        lines.extend([
-            "",
-            "SOURCE WARNINGS:",
-            "",
-        ])
-
+        lines.extend(["", "SOURCE WARNINGS:", ""])
         for warning in source_errors:
             lines.append(f"• {warning}")
 
@@ -1885,7 +1825,22 @@ async def reply_handler(
 
 
 # ================================================================
-# 20. APPLICATION STARTUP
+# 20. TELEGRAM ERROR HANDLER
+# ================================================================
+
+async def telegram_error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    print(
+        "❌ Telegram update error:",
+        repr(context.error),
+        flush=True,
+    )
+
+
+# ================================================================
+# 21. APPLICATION STARTUP
 # ================================================================
 
 def main():
@@ -1938,8 +1893,11 @@ def main():
         )
     )
 
+    app.add_error_handler(telegram_error_handler)
+
     print(
-        "🚀 11Hunt Prospect Discovery running..."
+        "🚀 11Hunt Prospect Discovery running...",
+        flush=True
     )
 
     print(
@@ -1948,12 +1906,15 @@ def main():
     )
 
     app.run_polling(
-        drop_pending_updates=False
+        drop_pending_updates=False,
+        allowed_updates=Update.ALL_TYPES,
+        timeout=30,
+        poll_interval=0.5,
     )
 
 
 # ================================================================
-# 21. RUN
+# 22. RUN
 # ================================================================
 
 if __name__ == "__main__":
