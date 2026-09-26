@@ -1948,7 +1948,7 @@ def main():
     )
 
     app.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=False
     )
 
 
