@@ -1,17 +1,10 @@
 import os
 import asyncio
 import threading
-from datetime import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-import pytz
 from google import genai
-
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -21,24 +14,19 @@ from telegram.ext import (
     filters,
 )
 
-
-# ================================================================
-# 1. RENDER HEALTH SERVER
-# ================================================================
+# ============================================================
+# 1. RENDER HEALTH CHECK
+# ============================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Startup Co-Pilot is alive!")
+        self.wfile.write(b"11Hunt Startup Agent is running.")
 
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
-
-    def log_message(self, format, *args):
-        return
 
 
 def run_health_server():
@@ -47,15 +35,12 @@ def run_health_server():
     server.serve_forever()
 
 
-threading.Thread(
-    target=run_health_server,
-    daemon=True
-).start()
+threading.Thread(target=run_health_server, daemon=True).start()
 
 
-# ================================================================
-# 2. ENVIRONMENT
-# ================================================================
+# ============================================================
+# 2. API SETUP
+# ============================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -66,827 +51,610 @@ if not TELEGRAM_BOT_TOKEN:
 if not GEMINI_API_KEY:
     raise ValueError("Missing GEMINI_API_KEY")
 
-
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-TIMEZONE = pytz.timezone("Asia/Kolkata")
+# IMPORTANT:
+# Use the model currently available to your Gemini API project.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 
-# ================================================================
-# 3. GEMINI ENGINE
-# ================================================================
+# ============================================================
+# 3. STARTUP AGENT PROMPT
+# ============================================================
 
-MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-]
+SYSTEM_PROMPT = """
+You are 11Hunt Startup Agent.
 
+You help a student founder discover, evaluate and build startup ideas.
 
-async def ask_ai(prompt):
-    """
-    Runs Gemini without automatic function calling.
-    """
+Your ideas must be:
+- practical
+- buildable by a student/solo founder
+- capable of becoming an app, SaaS, AI tool or AI agent
+- based on a real problem
+- specific rather than generic
+- realistic about competition
+- focused on getting first users
 
-    last_error = None
+When generating an idea, use this format:
 
-    for model in MODELS:
+🚀 STARTUP BLUEPRINT
 
-        try:
-            response = await asyncio.to_thread(
-                ai_client.models.generate_content,
-                model=model,
-                contents=prompt,
-            )
+🎯 IDEA
+Name + one-line description.
 
-            if response and response.text:
-                return response.text
+🔥 PROBLEM
+Who has the problem and what exactly is painful?
 
-        except Exception as error:
-            last_error = error
-            continue
+💡 SOLUTION
+What does the product do?
 
-    raise Exception(
-        f"Gemini Engine Error: {str(last_error)}"
-    )
+👤 TARGET USER
+Who would actually use/pay for it?
 
+🤖 AI / AUTOMATION
+Explain where AI or automation is genuinely useful.
 
-# ================================================================
-# 4. PROMPTS
-# ================================================================
-
-BLUEPRINT_PROMPT = """
-You are Startup Co-Pilot for a CS student founder.
-
-Generate ONE realistic startup idea that a student could actually
-build using AI/no-code/low-code tools.
-
-IMPORTANT:
-The idea should preferably be an APP, micro-SaaS, AI tool,
-automation product, or useful web product.
-
-Use this exact structure:
-
-🚀 DAILY STARTUP BLUEPRINT
-
-💡 IDEA
-Name:
-One-line description:
-
-🎯 PROBLEM
-Who has the problem?
-What exactly is painful?
-
-🛠 SOLUTION
-What would the app do?
-
-👤 FIRST USER
-Who should use it first?
+🛠 MVP
+Give the smallest version that can be built first.
 
 💰 MONETIZATION
-How could it make money?
+How could this make money?
 
-⚡ MVP
-List only the 3-5 features required for version 1.
+🥊 COMPETITION
+Mention relevant existing alternatives.
 
-📈 FIRST 10 USERS
-Give a realistic way for a student to find the first users.
+📈 FIRST USERS
+Give practical ways to find the first users.
 
-🥊 STRESS TEST
-Give 2 difficult questions the founder must answer.
+⚠️ BIGGEST RISK
+The biggest reason this idea might fail.
 
-Keep it practical.
-Do not invent fake statistics.
-Do not claim something is guaranteed.
+🚀 IMPLEMENTATION
+Give a simple first build plan.
 """
 
 
-APP_IDEA_PROMPT = """
-You are an expert product founder helping a CS student build an
-actual app.
+# ============================================================
+# 4. GEMINI CALL
+# ============================================================
 
-Generate ONE buildable app startup idea.
+def generate_content(prompt: str, system_instruction: str = SYSTEM_PROMPT) -> str:
 
-The idea must:
-- solve a specific problem
-- have a clear target user
-- be possible to prototype quickly
-- use AI only where it adds real value
-- have a possible path to revenue
+    response = ai_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config={
+            "system_instruction": system_instruction,
+            "temperature": 0.7,
+        },
+    )
 
-Return:
+    if not response or not response.text:
+        raise Exception("Gemini returned an empty response.")
 
-💡 APP IDEA
-
-Name:
-Target user:
-Problem:
-Solution:
-
-CORE USER FLOW
-1.
-2.
-3.
-4.
-
-MVP FEATURES
-1.
-2.
-3.
-4.
-5.
-
-WHY SOMEONE WOULD PAY
-
-HOW TO GET FIRST 10 USERS
-
-BIGGEST RISK
-
-Keep it realistic and concise.
-"""
+    return response.text
 
 
-BUILD_PROMPT = """
-You are a startup product architect.
-
-Take the following startup idea and turn it into a practical MVP.
-
-STARTUP IDEA:
-{idea}
-
-Return:
-
-🚀 BUILD SPEC
-
-1. PRODUCT
-What exactly are we building?
-
-2. USER
-Who uses it?
-
-3. CORE WORKFLOW
-Step-by-step user journey.
-
-4. MVP FEATURES
-Only essential features.
-
-5. AI ROLE
-Exactly where AI is used.
-
-6. TECH STACK
-Frontend:
-Backend:
-Database:
-AI:
-Hosting:
-
-7. 48-HOUR MVP
-Day 1:
-Day 2:
-
-8. WHAT NOT TO BUILD
-List unnecessary features.
-
-Make this realistic for a beginner/student founder.
-"""
-
-
-IMPLEMENT_PROMPT = """
-You are the technical implementation mentor for a beginner founder.
-
-The founder wants to build this product:
-
-{idea}
-
-Create a concrete implementation plan.
-
-Return:
-
-⚙️ IMPLEMENTATION PLAN
-
-STEP 1 — SETUP
-Exact project setup.
-
-STEP 2 — FRONTEND
-What screens/components to create.
-
-STEP 3 — BACKEND
-What APIs/endpoints are required.
-
-STEP 4 — DATABASE
-Tables/data required.
-
-STEP 5 — AI
-What Gemini/AI should do.
-
-STEP 6 — CONNECT EVERYTHING
-How the pieces communicate.
-
-STEP 7 — TEST
-What must be tested.
-
-STEP 8 — DEPLOY
-Simple deployment plan.
-
-🔥 FIRST VERSION
-Tell the founder exactly what the smallest working version should contain.
-
-Do NOT add unnecessary complexity.
-"""
-
-
-STRESS_PROMPT = """
-You are a brutally honest startup reviewer.
-
-Startup idea:
-{idea}
-
-Founder answer:
-{answer}
-
-Review:
-
-✅ WHAT IS GOOD
-
-⚠️ WHAT IS WEAK
-
-🔍 WHAT THEY MISSED
-
-🎯 ONE SPECIFIC IMPROVEMENT
-
-Keep it concise and practical.
-"""
-
-
-TECH_PROMPT = """
-For this startup idea:
-
-{idea}
-
-Give a beginner-friendly MVP tech stack.
-
-Include:
-
-Frontend:
-Backend:
-Database:
-AI:
-Authentication:
-Hosting:
-Useful APIs:
-
-Then explain why each choice is appropriate.
-
-Avoid overengineering.
-"""
-
-
-# ================================================================
+# ============================================================
 # 5. KEYBOARDS
-# ================================================================
+# ============================================================
 
-def main_keyboard():
+def idea_keyboard():
 
     return InlineKeyboardMarkup([
-
         [
             InlineKeyboardButton(
-                "💡 App Idea",
-                callback_data="app_idea"
-            ),
-            InlineKeyboardButton(
-                "🚀 Build This",
-                callback_data="build"
-            ),
-        ],
-
-        [
-            InlineKeyboardButton(
-                "⚙️ Implement",
+                "🚀 Implement This",
                 callback_data="implement"
-            ),
-            InlineKeyboardButton(
-                "🥊 Stress Test",
-                callback_data="stress"
-            ),
+            )
         ],
-
         [
             InlineKeyboardButton(
                 "🛠 Tech Stack",
                 callback_data="tech"
             ),
             InlineKeyboardButton(
-                "🔄 New Idea",
-                callback_data="new"
-            ),
+                "🥊 Stress Test",
+                callback_data="stress"
+            )
         ],
-
         [
             InlineKeyboardButton(
-                "⏰ 8 AM Daily",
-                callback_data="alarm"
+                "🔄 New Idea",
+                callback_data="new_idea"
             )
         ]
-
     ])
 
 
-# ================================================================
-# 6. START
-# ================================================================
+def startup_type_keyboard():
 
-async def start_command(update, context):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📱 App / SaaS",
+                callback_data="type_app"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🤖 AI Agent",
+                callback_data="type_agent"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🎲 Surprise Me",
+                callback_data="type_random"
+            )
+        ]
+    ])
 
-    chat_id = update.effective_chat.id
 
-    context.user_data["chat_id"] = chat_id
+# ============================================================
+# 6. /START
+# ============================================================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    text = """
+🚀 11Hunt Startup Agent
+
+I'm your startup idea + execution copilot.
+
+What do you want to explore?
+"""
 
     await update.message.reply_text(
-        """
-👋 *Startup Co-Pilot is active.*
-
-I can help you:
-
-💡 Find app ideas
-🚀 Turn ideas into MVPs
-⚙️ Create implementation plans
-🥊 Stress-test ideas
-🛠 Choose a tech stack
-⏰ Send you a startup blueprint every morning
-
-Start with:
-
-/pitch
-        """,
-        parse_mode="Markdown",
-        reply_markup=main_keyboard()
+        text,
+        reply_markup=startup_type_keyboard()
     )
 
 
-# ================================================================
-# 7. GENERATE DAILY IDEA
-# ================================================================
-
-async def generate_blueprint():
-
-    return await ask_ai(BLUEPRINT_PROMPT)
-
-
-async def pitch_command(update, context):
-
-    status = await update.message.reply_text(
-        "🤖 Thinking of a practical startup idea..."
-    )
-
-    try:
-
-        idea = await generate_blueprint()
-
-        context.user_data["last_idea"] = idea
-
-        await status.delete()
-
-        await update.message.reply_text(
-            idea,
-            reply_markup=main_keyboard()
-        )
-
-    except Exception as error:
-
-        await status.edit_text(
-            f"❌ {error}"
-        )
-
-
-# ================================================================
-# 8. APP IDEA
-# ================================================================
-
-async def app_idea(update, context):
-
-    status = await update.message.reply_text(
-        "💡 Finding a buildable app idea..."
-    )
-
-    try:
-
-        idea = await ask_ai(APP_IDEA_PROMPT)
-
-        context.user_data["last_idea"] = idea
-
-        await status.delete()
-
-        await update.message.reply_text(
-            idea,
-            reply_markup=main_keyboard()
-        )
-
-    except Exception as error:
-
-        await status.edit_text(
-            f"❌ {error}"
-        )
-
-
-# ================================================================
-# 9. BUILD
-# ================================================================
-
-async def build_app(update, context):
-
-    idea = context.user_data.get(
-        "last_idea",
-        "No startup idea selected yet."
-    )
-
-    status = await update.message.reply_text(
-        "🚀 Turning the idea into an MVP..."
-    )
-
-    try:
-
-        prompt = BUILD_PROMPT.format(
-            idea=idea
-        )
-
-        result = await ask_ai(prompt)
-
-        context.user_data["build_plan"] = result
-
-        await status.delete()
-
-        await update.message.reply_text(
-            result,
-            reply_markup=main_keyboard()
-        )
-
-    except Exception as error:
-
-        await status.edit_text(
-            f"❌ {error}"
-        )
-
-
-# ================================================================
-# 10. IMPLEMENT
-# ================================================================
-
-async def implement_app(update, context):
-
-    idea = context.user_data.get(
-        "build_plan",
-        context.user_data.get(
-            "last_idea",
-            "No startup idea selected."
-        )
-    )
-
-    status = await update.message.reply_text(
-        "⚙️ Creating the implementation roadmap..."
-    )
-
-    try:
-
-        prompt = IMPLEMENT_PROMPT.format(
-            idea=idea
-        )
-
-        result = await ask_ai(prompt)
-
-        await status.delete()
-
-        await update.message.reply_text(
-            result,
-            reply_markup=main_keyboard()
-        )
-
-    except Exception as error:
-
-        await status.edit_text(
-            f"❌ {error}"
-        )
-
-
-# ================================================================
-# 11. TECH STACK
-# ================================================================
-
-async def tech_stack(update, context):
-
-    idea = context.user_data.get(
-        "last_idea",
-        "No startup idea selected."
-    )
-
-    status = await update.message.reply_text(
-        "🛠 Designing the simplest tech stack..."
-    )
-
-    try:
-
-        prompt = TECH_PROMPT.format(
-            idea=idea
-        )
-
-        result = await ask_ai(prompt)
-
-        await status.delete()
-
-        await update.message.reply_text(
-            result,
-            reply_markup=main_keyboard()
-        )
-
-    except Exception as error:
-
-        await status.edit_text(
-            f"❌ {error}"
-        )
-
-
-# ================================================================
-# 12. STRESS TEST
-# ================================================================
-
-async def stress_test(update, context):
-
-    idea = context.user_data.get(
-        "last_idea",
-        "No startup idea selected."
-    )
-
-    context.user_data["waiting_for_stress"] = True
+# ============================================================
+# 7. /PITCH
+# ============================================================
+
+async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
-        f"""
-🥊 *STRESS TEST*
-
-Startup:
-
-{idea}
-
-Tell me:
-
-*Why would someone pay for this instead of
-using an existing solution?*
-
-Reply with your answer.
-        """,
-        parse_mode="Markdown"
+        "🚀 What should I generate?",
+        reply_markup=startup_type_keyboard()
     )
 
 
-async def stress_reply(update, context):
+# ============================================================
+# 8. GENERATE IDEA
+# ============================================================
 
-    if not context.user_data.get("waiting_for_stress"):
-        return
+async def generate_idea(
+    query,
+    context,
+    idea_type="random"
+):
 
-    context.user_data["waiting_for_stress"] = False
+    if idea_type == "app":
+        request = """
+Generate ONE strong startup idea that is primarily an APP or SaaS product.
 
-    idea = context.user_data.get(
-        "last_idea",
-        "Unknown startup"
-    )
+Do not give a generic AI wrapper.
 
-    answer = update.message.text
+Think about:
+- real user pain
+- specific niche
+- recurring use
+- simple MVP
+- potential monetization
 
-    status = await update.message.reply_text(
-        "🧐 Stress-testing your answer..."
+Return the complete STARTUP BLUEPRINT.
+"""
+
+    elif idea_type == "agent":
+        request = """
+Generate ONE strong startup idea that is primarily an AI AGENT.
+
+The agent must perform useful multi-step work for a specific user.
+
+Do not simply say "AI chatbot".
+
+Explain:
+- what triggers the agent
+- what information it processes
+- what actions it performs
+- what result it produces
+- why the user would pay
+
+Return the complete STARTUP BLUEPRINT.
+"""
+
+    else:
+        request = """
+Generate ONE practical startup idea.
+
+It can be:
+- an app
+- SaaS
+- AI agent
+- automation product
+
+Prefer an idea that a student/solo founder could realistically build an MVP for.
+Return the complete STARTUP BLUEPRINT.
+"""
+
+    status = await query.message.reply_text(
+        "🧠 11Hunt is thinking..."
     )
 
     try:
 
-        prompt = STRESS_PROMPT.format(
-            idea=idea,
-            answer=answer
+        result = await asyncio.to_thread(
+            generate_content,
+            request
         )
 
-        result = await ask_ai(prompt)
+        context.user_data["last_idea"] = result
 
         await status.delete()
 
-        await update.message.reply_text(
+        await query.message.reply_text(
             result,
-            reply_markup=main_keyboard()
+            reply_markup=idea_keyboard()
         )
 
-    except Exception as error:
+    except Exception as e:
 
         await status.edit_text(
-            f"❌ {error}"
+            f"❌ Gemini Error\n\n{str(e)}"
         )
 
 
-# ================================================================
-# 13. NEW IDEA
-# ================================================================
+# ============================================================
+# 9. BUTTON HANDLER
+# ============================================================
 
-async def new_idea(update, context):
-
-    status = await update.message.reply_text(
-        "🔄 Generating a fresh idea..."
-    )
-
-    try:
-
-        idea = await generate_blueprint()
-
-        context.user_data["last_idea"] = idea
-
-        await status.delete()
-
-        await update.message.reply_text(
-            idea,
-            reply_markup=main_keyboard()
-        )
-
-    except Exception as error:
-
-        await status.edit_text(
-            f"❌ {error}"
-        )
-
-
-# ================================================================
-# 14. 8 AM DAILY ALARM
-# ================================================================
-
-async def daily_blueprint(context):
-
-    chat_id = context.job.chat_id
-
-    try:
-
-        idea = await generate_blueprint()
-
-        context.user_data["last_idea"] = idea
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="☀️ *YOUR 8 AM STARTUP BLUEPRINT*\n\n"
-                 + idea,
-            parse_mode="Markdown",
-            reply_markup=main_keyboard()
-        )
-
-    except Exception as error:
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"❌ Daily blueprint failed:\n{error}"
-        )
-
-
-def schedule_alarm(application, chat_id):
-
-    # Remove previous alarm for this chat
-    if application.job_queue:
-
-        for job in application.job_queue.get_jobs_by_name(
-            f"daily_{chat_id}"
-        ):
-            job.schedule_removal()
-
-        application.job_queue.run_daily(
-            daily_blueprint,
-            time=time(
-                hour=8,
-                minute=0,
-                tzinfo=TIMEZONE
-            ),
-            chat_id=chat_id,
-            name=f"daily_{chat_id}"
-        )
-
-
-async def alarm_command(update, context):
-
-    chat_id = update.effective_chat.id
-
-    schedule_alarm(
-        context.application,
-        chat_id
-    )
-
-    await update.message.reply_text(
-        "⏰ *8 AM alarm activated.*\n\n"
-        "I'll send you a startup blueprint every morning at 8:00 AM IST.",
-        parse_mode="Markdown"
-    )
-
-
-async def stop_alarm(update, context):
-
-    chat_id = update.effective_chat.id
-
-    if context.application.job_queue:
-
-        jobs = context.application.job_queue.get_jobs_by_name(
-            f"daily_{chat_id}"
-        )
-
-        for job in jobs:
-            job.schedule_removal()
-
-    await update.message.reply_text(
-        "🔕 8 AM startup alarm stopped."
-    )
-
-
-# ================================================================
-# 15. BUTTON HANDLER
-# ================================================================
-
-async def button_handler(update, context):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
-
     await query.answer()
 
-    if query.data == "app_idea":
+    # -----------------------------
+    # SELECT APP
+    # -----------------------------
 
-        await app_idea(update, context)
+    if query.data == "type_app":
 
-    elif query.data == "build":
+        await generate_idea(
+            query,
+            context,
+            "app"
+        )
 
-        await build_app(update, context)
+    # -----------------------------
+    # SELECT AI AGENT
+    # -----------------------------
+
+    elif query.data == "type_agent":
+
+        await generate_idea(
+            query,
+            context,
+            "agent"
+        )
+
+    # -----------------------------
+    # RANDOM
+    # -----------------------------
+
+    elif query.data == "type_random":
+
+        await generate_idea(
+            query,
+            context,
+            "random"
+        )
+
+    # -----------------------------
+    # NEW IDEA
+    # -----------------------------
+
+    elif query.data == "new_idea":
+
+        await generate_idea(
+            query,
+            context,
+            "random"
+        )
+
+    # -----------------------------
+    # IMPLEMENT
+    # -----------------------------
 
     elif query.data == "implement":
 
-        await implement_app(update, context)
+        idea = context.user_data.get(
+            "last_idea",
+            "No startup idea stored."
+        )
 
-    elif query.data == "stress":
+        status = await query.message.reply_text(
+            "🛠 Creating implementation plan..."
+        )
 
-        await stress_test(update, context)
+        prompt = f"""
+The founder wants to IMPLEMENT this startup idea:
+
+{idea}
+
+Create a practical MVP implementation plan.
+
+Include:
+
+1. MVP goal
+2. Core features
+3. User flow
+4. Recommended tech stack
+5. AI components
+6. Database requirements
+7. What to build first
+8. What NOT to build yet
+9. 48-hour prototype plan
+10. First test user strategy
+
+Keep it realistic for a student/solo founder.
+"""
+
+        try:
+
+            result = await asyncio.to_thread(
+                generate_content,
+                prompt
+            )
+
+            await status.delete()
+
+            await query.message.reply_text(
+                "🚀 IMPLEMENTATION PLAN\n\n" + result
+            )
+
+        except Exception as e:
+
+            await status.edit_text(
+                f"❌ Error\n\n{str(e)}"
+            )
+
+    # -----------------------------
+    # TECH STACK
+    # -----------------------------
 
     elif query.data == "tech":
 
-        await tech_stack(update, context)
-
-    elif query.data == "new":
-
-        await new_idea(update, context)
-
-    elif query.data == "alarm":
-
-        schedule_alarm(
-            context.application,
-            update.effective_chat.id
+        idea = context.user_data.get(
+            "last_idea",
+            ""
         )
+
+        status = await query.message.reply_text(
+            "🛠 Designing the MVP stack..."
+        )
+
+        prompt = f"""
+For this startup:
+
+{idea}
+
+Give a simple student-friendly technology stack.
+
+Include:
+- frontend
+- backend
+- database
+- AI model
+- authentication
+- deployment
+- integrations
+
+Avoid unnecessary infrastructure.
+Explain why each technology is needed.
+"""
+
+        try:
+
+            result = await asyncio.to_thread(
+                generate_content,
+                prompt
+            )
+
+            await status.delete()
+
+            await query.message.reply_text(
+                "🛠 TECH STACK\n\n" + result
+            )
+
+        except Exception as e:
+
+            await status.edit_text(
+                f"❌ Error\n\n{str(e)}"
+            )
+
+    # -----------------------------
+    # STRESS TEST
+    # -----------------------------
+
+    elif query.data == "stress":
+
+        idea = context.user_data.get(
+            "last_idea",
+            ""
+        )
+
+        context.user_data["stress_mode"] = True
 
         await query.message.reply_text(
-            "⏰ 8 AM daily startup blueprint activated."
+            f"""
+🥊 STARTUP STRESS TEST
+
+Here is your idea:
+
+{idea}
+
+Challenge:
+
+What is the biggest reason a real customer might refuse to use or pay for this?
+
+Reply with your answer.
+I will challenge your reasoning.
+"""
         )
 
 
-# ================================================================
-# 16. MAIN
-# ================================================================
+# ============================================================
+# 10. TEXT RESPONSE / STRESS TEST
+# ============================================================
+
+async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.user_data.get("stress_mode"):
+        return
+
+    context.user_data["stress_mode"] = False
+
+    answer = update.message.text
+
+    idea = context.user_data.get(
+        "last_idea",
+        ""
+    )
+
+    status = await update.message.reply_text(
+        "🥊 Stress-testing your answer..."
+    )
+
+    prompt = f"""
+You are a tough startup reviewer.
+
+STARTUP IDEA:
+{idea}
+
+FOUNDER'S ANSWER:
+{answer}
+
+Analyze:
+
+1. What is strong?
+2. What assumption is weak?
+3. What important risk is missing?
+4. What experiment should the founder run?
+5. Give one concrete next action.
+
+Be direct. Do not blindly agree.
+"""
+
+    try:
+
+        result = await asyncio.to_thread(
+            generate_content,
+            prompt,
+            "You are a brutally honest but constructive startup reviewer."
+        )
+
+        await status.delete()
+
+        await update.message.reply_text(
+            "🥊 STRESS TEST RESULT\n\n" + result
+        )
+
+    except Exception as e:
+
+        await status.edit_text(
+            f"❌ Error\n\n{str(e)}"
+        )
+
+
+# ============================================================
+# 11. DAILY 8 AM REMINDER
+# ============================================================
+
+async def daily_startup(context: ContextTypes.DEFAULT_TYPE):
+
+    chat_id = context.job.chat_id
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "☀️ GOOD MORNING, FOUNDER\n\n"
+            "Ready for today's startup hunt?\n\n"
+            "Use /pitch to generate today's idea."
+        )
+    )
+
+
+async def setup_daily_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    chat_id = update.effective_chat.id
+
+    # Remove previous reminder for this chat
+    current_jobs = context.job_queue.get_jobs_by_name(
+        f"daily_{chat_id}"
+    )
+
+    for job in current_jobs:
+        job.schedule_removal()
+
+    # 08:00 local bot/server timezone
+    context.job_queue.run_daily(
+        daily_startup,
+        time=__import__("datetime").time(
+            hour=8,
+            minute=0
+        ),
+        chat_id=chat_id,
+        name=f"daily_{chat_id}"
+    )
+
+    await update.message.reply_text(
+        "⏰ Daily 8 AM startup reminder enabled."
+    )
+
+
+# ============================================================
+# 12. MAIN
+# ============================================================
 
 def main():
 
-    app = (
-        Application
-        .builder()
+    application = (
+        Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .build()
     )
 
-    # Commands
-    app.add_handler(
+    application.add_handler(
         CommandHandler("start", start_command)
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler("pitch", pitch_command)
     )
 
-    app.add_handler(
-        CommandHandler("alarm", alarm_command)
+    application.add_handler(
+        CommandHandler("reminder", setup_daily_reminder)
     )
 
-    app.add_handler(
-        CommandHandler("stopalarm", stop_alarm)
-    )
-
-    # Buttons
-    app.add_handler(
+    application.add_handler(
         CallbackQueryHandler(button_handler)
     )
 
-    # Text / stress-test replies
-    app.add_handler(
+    application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            stress_reply
+            reply_handler
         )
     )
 
-    print("🚀 Startup Co-Pilot running...")
+    print("🚀 11Hunt Startup Agent running...")
 
-    app.run_polling(
+    application.run_polling(
         drop_pending_updates=True
     )
 
