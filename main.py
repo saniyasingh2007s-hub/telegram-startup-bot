@@ -19,18 +19,20 @@ from telegram.ext import (
 # 1. Health-Check HTTP Server
 # -------------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def _health(self):
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Bot is active and running!")
 
-def run_health_server():
-    port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+    def do_GET(self):
+        self._health()
 
-threading.Thread(target=run_health_server, daemon=True).start()
+    def do_HEAD(self):
+        self._health()
 
+    def log_message(self, format, *args):
+        pass
 # -------------------------------------------------------------------
 # 2. Environment Setup & Prompts
 # -------------------------------------------------------------------
