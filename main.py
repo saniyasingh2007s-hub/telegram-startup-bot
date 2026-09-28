@@ -1,11 +1,8 @@
-```python
 import os
-import asyncio
+import random
 import threading
-import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -21,10 +18,11 @@ from telegram.ext import (
 # ============================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
+
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"11Hunt Startup Bot is running!")
+        self.wfile.write(b"11Hunt Startup Agent is running!")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -37,200 +35,222 @@ def run_health_server():
     server.serve_forever()
 
 
-threading.Thread(target=run_health_server, daemon=True).start()
+threading.Thread(
+    target=run_health_server,
+    daemon=True
+).start()
 
 
 # ============================================================
-# 2. ENVIRONMENT
+# 2. TELEGRAM TOKEN
 # ============================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN")
 
-if not GEMINI_API_KEY:
-    raise ValueError("Missing GEMINI_API_KEY")
 
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+# ============================================================
+# 3. STARTUP IDEAS
+# ============================================================
 
-# Your Render variable can override this.
-PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+STARTUP_IDEAS = [
 
-# Automatic fallbacks.
-FALLBACK_MODELS = [
-    PRIMARY_MODEL,
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
-    
+    {
+        "name": "Local Business Follow-Up Agent",
+        "problem": (
+            "Small businesses receive enquiries through WhatsApp and "
+            "Instagram but often forget to follow up with potential customers."
+        ),
+        "solution": (
+            "A lightweight system that collects enquiries, reminds the "
+            "business owner to follow up and prepares personalized messages."
+        ),
+        "customer": (
+            "Salons, clinics, tutors, repair businesses and other local "
+            "service businesses."
+        ),
+        "mvp": (
+            "Lead list + follow-up reminders + message templates + "
+            "simple customer status."
+        ),
+    },
+
+    {
+        "name": "Student Opportunity Tracker",
+        "problem": (
+            "Students discover internships, hackathons, startup programs "
+            "and competitions but lose track of deadlines and applications."
+        ),
+        "solution": (
+            "A personal dashboard that organizes opportunities, deadlines "
+            "and application progress."
+        ),
+        "customer": (
+            "Students, beginner freelancers and early-career builders."
+        ),
+        "mvp": (
+            "Opportunity entry + deadline + application status + "
+            "reminders."
+        ),
+    },
+
+    {
+        "name": "Website Problem Scanner",
+        "problem": (
+            "Many small businesses have outdated websites but do not know "
+            "what should actually be improved."
+        ),
+        "solution": (
+            "A simple website analysis tool that produces a clear list "
+            "of visible problems and improvement opportunities."
+        ),
+        "customer": (
+            "Small businesses and freelancers who sell website services."
+        ),
+        "mvp": (
+            "URL input + basic website checks + opportunity report."
+        ),
+    },
+
+    {
+        "name": "Creator Sponsorship Tracker",
+        "problem": (
+            "Small creators contact brands for sponsorships but lose track "
+            "of conversations, follow-ups and deal status."
+        ),
+        "solution": (
+            "A lightweight CRM designed specifically for creator-brand "
+            "outreach."
+        ),
+        "customer": (
+            "YouTubers, Instagram creators and small creator agencies."
+        ),
+        "mvp": (
+            "Brand contacts + outreach status + follow-up dates + notes."
+        ),
+    },
+
+    {
+        "name": "Freelancer Proposal Builder",
+        "problem": (
+            "Beginner freelancers waste time writing proposals and often "
+            "send generic messages that do not address the client's actual need."
+        ),
+        "solution": (
+            "A tool that turns a client's requirement into a personalized "
+            "proposal and simple project plan."
+        ),
+        "customer": (
+            "Students, freelancers and beginner agencies."
+        ),
+        "mvp": (
+            "Client requirement input + proposal generator + project scope."
+        ),
+    },
+
+    {
+        "name": "Local Appointment Recovery",
+        "problem": (
+            "Appointment-based businesses lose revenue when customers "
+            "cancel or fail to show up."
+        ),
+        "solution": (
+            "A simple system that tracks appointments and helps businesses "
+            "fill cancelled slots using their existing customer list."
+        ),
+        "customer": (
+            "Clinics, salons, tutors, consultants and other appointment businesses."
+        ),
+        "mvp": (
+            "Appointment list + cancellation status + replacement reminder."
+        ),
+    },
+
 ]
 
-# Remove duplicates while keeping order.
-MODEL_LIST = list(dict.fromkeys(FALLBACK_MODELS))
-
 
 # ============================================================
-# 3. STARTUP IDEA PROMPT
+# 4. GENERATE STARTUP IDEA
 # ============================================================
 
-SYSTEM_PROMPT = """
-You are an elite Startup Analyst & Co-Pilot for a CS student/founder.
+def generate_startup_idea():
 
-Your job is NOT to generate random startup ideas.
+    idea = random.choice(STARTUP_IDEAS)
 
-Generate practical startup opportunities that a student or solo founder
-could realistically validate and begin building.
-
-IMPORTANT:
-
-- Include both AI-agent ideas AND normal app/SaaS ideas.
-- Do not force every idea to be an AI agent.
-- Prefer ideas that can realistically be built as an MVP.
-- Focus on a clear customer, painful problem and realistic distribution.
-- Avoid generic "AI wrapper" ideas.
-- Explain why someone would actually pay.
-- Give concrete implementation direction.
-
-Return exactly this structure:
-
-🚀 DAILY STARTUP BLUEPRINT
+    return f"""🚀 DAILY STARTUP BLUEPRINT
 
 💡 IDEA
-Name + one-line description.
+{idea["name"]}
 
 1. STORY & PROBLEM
-A realistic situation showing the problem.
+
+{idea["problem"]}
 
 2. PROPOSED SOLUTION
-Explain what the product/app/agent actually does.
+
+{idea["solution"]}
 
 3. WHO PAYS?
-Target customer and why they would pay.
+
+{idea["customer"]}
 
 4. SCORECARD
-• Pain Intensity: X/10
-• Willingness to Pay: X/10
-• Distribution Ease: X/10
-• Technical Feasibility: X/10
+
+• Pain Intensity: 8/10
+• Willingness to Pay: 7/10
+• Distribution Ease: 8/10
+• Technical Feasibility: 9/10
 
 5. COMPETITORS
-Existing alternatives and what they don't solve well.
+
+Existing spreadsheets, CRMs and generic automation tools.
+
+WHERE THEY FAIL:
+They are built for broad workflows rather than this specific problem.
 
 6. MVP
-List the smallest version that can be built first.
+
+{idea["mvp"]}
 
 7. HOW TO BUILD
-Give a simple practical implementation path for a beginner.
+
+Start with:
+
+• Simple web/mobile interface
+• Small database
+• Basic workflow automation
+• AI only where it provides a clear advantage
+
+Do not build advanced features before validating the workflow.
 
 8. FIRST 10 USERS
-Give a realistic way to find the first users without paid ads.
+
+Find 20 potential users manually.
+
+Ask about their current workflow.
+
+Show them the problem.
+
+Offer the first version to a few users in exchange for feedback.
 
 9. STRESS TEST
-Give two difficult questions the founder must answer.
+
+1. Will users actually change their current workflow to use this?
+
+2. Can the first 10 customers be reached without paid advertising?
 
 10. BUILD THIS?
-End with:
-"Recommended next action: Validate / Build / Reject"
-and explain why in one sentence.
-"""
 
+Recommended next action: VALIDATE FIRST.
 
-STRESS_TEST_EVAL_PROMPT = """
-You are reviewing a founder's answer to a startup stress-test.
-
-Original startup:
-{idea_context}
-
-Founder answer:
-{user_answer}
-
-Give a concise review:
-
-1. What is strong?
-2. What is weak or risky?
-3. What assumption needs validation?
-4. One specific improvement.
+Prove that the problem exists before spending significant time building.
 """
 
 
 # ============================================================
-# 4. GEMINI ENGINE WITH RETRIES + FALLBACKS
-# ============================================================
-
-def generate_gemini_content(prompt: str, system_instruction: str) -> str:
-
-    last_error = None
-
-    for model in MODEL_LIST:
-
-        # Try each model up to 2 times.
-        for attempt in range(2):
-
-            try:
-                print(
-                    f"🤖 Trying Gemini model: {model} "
-                    f"(attempt {attempt + 1}/2)"
-                )
-
-                response = ai_client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config={
-                        "system_instruction": system_instruction,
-                        "temperature": 0.7,
-                    },
-                )
-
-                if response and response.text:
-                    print(f"✅ Gemini response received from {model}")
-                    return response.text
-
-                last_error = Exception(
-                    f"{model} returned an empty response"
-                )
-
-            except Exception as e:
-
-                last_error = e
-                error_text = str(e)
-
-                print(f"⚠️ {model} failed: {error_text}")
-
-                # Temporary errors:
-                # 503 = overloaded/unavailable
-                # 429 = quota/rate limit
-                if "503" in error_text or "UNAVAILABLE" in error_text:
-                    print(f"⚠️ {model} is temporarily overloaded.")
-    break
-                    if attempt == 0:
-                        print("⏳ Temporary Gemini overload. Retrying...")
-                        time.sleep(3)
-                        continue
-
-                    print(f"➡️ Falling back from {model}")
-                    break
-
-                if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-                    print(f"➡️ Quota/rate issue on {model}. Trying fallback.")
-                    break
-
-                if "404" in error_text or "NOT_FOUND" in error_text:
-                    print(f"➡️ Model unavailable: {model}")
-                    break
-
-                # Other errors: move to next model.
-                break
-
-    raise Exception(
-        "Gemini temporarily unavailable. "
-        "All configured models failed. "
-        f"Last error: {str(last_error)}"
-    )
-
-
-# ============================================================
-# 5. TELEGRAM KEYBOARD
+# 5. KEYBOARD
 # ============================================================
 
 def get_keyboard():
@@ -239,25 +259,25 @@ def get_keyboard():
         [
             InlineKeyboardButton(
                 "🎯 Answer Stress-Test",
-                callback_data="btn_stress_test"
+                callback_data="stress"
             ),
             InlineKeyboardButton(
                 "🛠 Build Plan",
-                callback_data="btn_build_plan"
+                callback_data="build"
             ),
         ],
         [
             InlineKeyboardButton(
                 "🚀 Implement Idea",
-                callback_data="btn_implement"
-            )
+                callback_data="implement"
+            ),
         ],
         [
             InlineKeyboardButton(
                 "🔄 Generate Another",
-                callback_data="btn_new_idea"
-            )
-        ]
+                callback_data="new"
+            ),
+        ],
     ])
 
 
@@ -271,9 +291,9 @@ async def start_command(
 ):
 
     await update.message.reply_text(
-        "👋 Welcome to your Startup Co-Pilot.\n\n"
-        "I can help you discover, stress-test and build startup ideas.\n\n"
-        "Use /pitch to generate today's startup opportunity."
+        "👋 Welcome to your Startup Co-Pilot!\n\n"
+        "I can help you discover, stress-test and plan startup ideas.\n\n"
+        "Use /pitch to get a startup opportunity."
     )
 
 
@@ -286,42 +306,15 @@ async def pitch_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    status_msg = await update.message.reply_text(
-        "🤖 Hunting for a practical startup opportunity..."
+    idea = generate_startup_idea()
+
+    context.user_data["last_idea"] = idea
+    context.user_data["awaiting_stress"] = False
+
+    await update.message.reply_text(
+        idea,
+        reply_markup=get_keyboard()
     )
-
-    try:
-
-        pitch_text = await asyncio.to_thread(
-            generate_gemini_content,
-            prompt=(
-                "Generate one strong startup idea for a CS student/founder. "
-                "It can be an AI agent, AI application, SaaS, mobile/web app "
-                "or other software product. Prefer something realistically "
-                "buildable and sellable."
-            ),
-            system_instruction=SYSTEM_PROMPT
-        )
-
-        context.user_data["last_idea"] = pitch_text
-        context.user_data["awaiting_stress_reply"] = False
-
-        await status_msg.delete()
-
-        await update.message.reply_text(
-            text=pitch_text,
-            reply_markup=get_keyboard()
-        )
-
-    except Exception as e:
-
-        await status_msg.delete()
-
-        await update.message.reply_text(
-            f"⚠️ AI temporarily unavailable.\n\n"
-            f"{str(e)}\n\n"
-            "Please try /pitch again in a moment."
-        )
 
 
 # ============================================================
@@ -334,177 +327,91 @@ async def button_handler(
 ):
 
     query = update.callback_query
+
     await query.answer()
 
-    # ----------------------------
-    # Stress Test
-    # ----------------------------
+    # --------------------------------------------------------
+    # NEW IDEA
+    # --------------------------------------------------------
 
-    if query.data == "btn_stress_test":
+    if query.data == "new":
 
-        context.user_data["awaiting_stress_reply"] = True
+        idea = generate_startup_idea()
+
+        context.user_data["last_idea"] = idea
 
         await query.message.reply_text(
-            "🥊 Send your answer to one of the stress-test questions.\n\n"
-            "I'll challenge the reasoning and point out the biggest risk."
+            idea,
+            reply_markup=get_keyboard()
         )
 
-    # ----------------------------
-    # Build Plan
-    # ----------------------------
+    # --------------------------------------------------------
+    # STRESS TEST
+    # --------------------------------------------------------
 
-    elif query.data == "btn_build_plan":
+    elif query.data == "stress":
 
-        idea = context.user_data.get(
-            "last_idea",
-            "No startup idea selected."
+        context.user_data["awaiting_stress"] = True
+
+        await query.message.reply_text(
+            "🥊 STRESS TEST\n\n"
+            "Answer this:\n\n"
+            "What is the biggest assumption behind this startup, "
+            "and how would you validate it with 5 potential customers?\n\n"
+            "Reply with your answer."
         )
 
-        status_msg = await query.message.reply_text(
-            "🛠 Creating a beginner-friendly MVP build plan..."
+    # --------------------------------------------------------
+    # BUILD PLAN
+    # --------------------------------------------------------
+
+    elif query.data == "build":
+
+        await query.message.reply_text(
+            "🛠 BUILD PLAN\n\n"
+            "PHASE 1 — VALIDATE\n"
+            "• Talk to 5 potential users\n"
+            "• Confirm the problem\n"
+            "• Ask how they solve it today\n\n"
+            "PHASE 2 — MVP\n"
+            "• Build only the core workflow\n"
+            "• Create the minimum required screens\n"
+            "• Add a simple database\n\n"
+            "PHASE 3 — TEST\n"
+            "• Give it to 3–5 users\n"
+            "• Watch how they use it\n"
+            "• Fix the biggest friction point\n\n"
+            "PHASE 4 — SELL\n"
+            "• Contact 20 potential customers\n"
+            "• Show the actual solution\n"
+            "• Ask for a paid pilot"
         )
 
-        try:
+    # --------------------------------------------------------
+    # IMPLEMENT
+    # --------------------------------------------------------
 
-            build_prompt = f"""
-Based on this startup idea:
+    elif query.data == "implement":
 
-{idea}
-
-Create a practical MVP build plan.
-
-Include:
-
-1. What to build first
-2. Main screens/features
-3. Backend requirements
-4. AI requirements if needed
-5. Database requirements
-6. No-code/low-code alternatives
-7. 48-hour MVP scope
-8. What NOT to build yet
-"""
-
-            plan = await asyncio.to_thread(
-                generate_gemini_content,
-                build_prompt,
-                "You are a practical startup MVP architect."
-            )
-
-            await status_msg.delete()
-
-            await query.message.reply_text(
-                f"🛠 BUILD PLAN\n\n{plan}"
-            )
-
-        except Exception as e:
-
-            await status_msg.delete()
-
-            await query.message.reply_text(
-                f"⚠️ Build planner temporarily unavailable.\n\n{e}"
-            )
-
-    # ----------------------------
-    # Implement
-    # ----------------------------
-
-    elif query.data == "btn_implement":
-
-        idea = context.user_data.get(
-            "last_idea",
-            "No startup idea selected."
+        await query.message.reply_text(
+            "🚀 IMPLEMENTATION BLUEPRINT\n\n"
+            "1. Define one target customer.\n\n"
+            "2. Define ONE painful problem.\n\n"
+            "3. Build the smallest workflow that solves it.\n\n"
+            "4. Recommended beginner stack:\n"
+            "• Frontend: React / Vite\n"
+            "• Backend: Python or Supabase\n"
+            "• Database: Supabase\n"
+            "• AI: Add only if genuinely useful\n\n"
+            "5. Build the first usable version.\n\n"
+            "6. Test it with real users.\n\n"
+            "7. Improve based on feedback.\n\n"
+            "⚠️ Do not build the complete product before validation."
         )
-
-        status_msg = await query.message.reply_text(
-            "🚀 Preparing implementation blueprint..."
-        )
-
-        try:
-
-            implementation_prompt = f"""
-Startup idea:
-
-{idea}
-
-Create a practical implementation blueprint for a beginner founder.
-
-Return:
-
-1. Product name
-2. Core user flow
-3. MVP features
-4. Recommended stack
-5. Database structure
-6. AI/API components
-7. Step-by-step build order
-8. First version that can be shipped in 48 hours
-9. What can be done using no-code/AI coding tools
-10. First validation test before building too much
-"""
-
-            implementation = await asyncio.to_thread(
-                generate_gemini_content,
-                implementation_prompt,
-                "You are an expert startup product and implementation architect."
-            )
-
-            await status_msg.delete()
-
-            await query.message.reply_text(
-                f"🚀 IMPLEMENTATION BLUEPRINT\n\n{implementation}"
-            )
-
-        except Exception as e:
-
-            await status_msg.delete()
-
-            await query.message.reply_text(
-                f"⚠️ Implementation planner temporarily unavailable.\n\n{e}"
-            )
-
-    # ----------------------------
-    # New Idea
-    # ----------------------------
-
-    elif query.data == "btn_new_idea":
-
-        status_msg = await query.message.reply_text(
-            "🔄 Finding another opportunity..."
-        )
-
-        try:
-
-            pitch_text = await asyncio.to_thread(
-                generate_gemini_content,
-                prompt=(
-                    "Generate a DIFFERENT startup idea from previous ideas. "
-                    "It may be an AI agent, AI app, SaaS, web app or software "
-                    "product. Make it realistic for a student founder."
-                ),
-                system_instruction=SYSTEM_PROMPT
-            )
-
-            context.user_data["last_idea"] = pitch_text
-
-            await status_msg.delete()
-
-            await query.message.reply_text(
-                text=pitch_text,
-                reply_markup=get_keyboard()
-            )
-
-        except Exception as e:
-
-            await status_msg.delete()
-
-            await query.message.reply_text(
-                f"⚠️ AI temporarily unavailable.\n\n{e}"
-            )
 
 
 # ============================================================
-# 9. STRESS TEST ANSWER
+# 9. STRESS TEST REPLY
 # ============================================================
 
 async def reply_handler(
@@ -512,48 +419,24 @@ async def reply_handler(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not context.user_data.get("awaiting_stress_reply"):
+    if not context.user_data.get("awaiting_stress"):
         return
 
-    context.user_data["awaiting_stress_reply"] = False
+    context.user_data["awaiting_stress"] = False
 
-    user_answer = update.message.text
+    answer = update.message.text
 
-    last_idea = context.user_data.get(
-        "last_idea",
-        "Startup Pitch"
+    await update.message.reply_text(
+        "📋 STRESS TEST REVIEW\n\n"
+        f"Your answer:\n{answer}\n\n"
+        "Now challenge it:\n\n"
+        "• What evidence proves the problem exists?\n"
+        "• Who specifically would pay?\n"
+        "• How would you reach the first 10 users?\n"
+        "• What is the smallest experiment that could prove or "
+        "disprove the idea?\n\n"
+        "Next action: validate these assumptions with real users."
     )
-
-    status_msg = await update.message.reply_text(
-        "🧐 Stress-testing your answer..."
-    )
-
-    try:
-
-        prompt = STRESS_TEST_EVAL_PROMPT.format(
-            idea_context=last_idea,
-            user_answer=user_answer
-        )
-
-        critique = await asyncio.to_thread(
-            generate_gemini_content,
-            prompt,
-            "You are a tough but constructive startup reviewer."
-        )
-
-        await status_msg.delete()
-
-        await update.message.reply_text(
-            f"📋 STRESS TEST REVIEW\n\n{critique}"
-        )
-
-    except Exception as e:
-
-        await status_msg.delete()
-
-        await update.message.reply_text(
-            f"⚠️ Reviewer temporarily unavailable.\n\n{e}"
-        )
 
 
 # ============================================================
@@ -588,9 +471,7 @@ def main():
         )
     )
 
-    print("🚀 11Hunt Startup Co-Pilot running...")
-    print(f"🤖 Primary Gemini model: {PRIMARY_MODEL}")
-    print(f"🔄 Fallback models: {MODEL_LIST}")
+    print("🚀 11Hunt Startup Agent running...")
 
     app.run_polling(
         drop_pending_updates=True
@@ -599,4 +480,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
