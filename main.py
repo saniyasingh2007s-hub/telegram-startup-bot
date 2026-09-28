@@ -201,6 +201,8 @@ def generate_gemini_content(prompt: str, system_instruction: str) -> str:
                 # 503 = overloaded/unavailable
                 # 429 = quota/rate limit
                 if "503" in error_text or "UNAVAILABLE" in error_text:
+                    print(f"⚠️ {model} is temporarily overloaded.")
+    break
                     if attempt == 0:
                         print("⏳ Temporary Gemini overload. Retrying...")
                         time.sleep(3)
