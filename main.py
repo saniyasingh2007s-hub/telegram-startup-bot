@@ -43,7 +43,7 @@ if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-SYSTEM_PROMPT = """
+BASE_SYSTEM_PROMPT = """
 You are an Evidence-First Startup Opportunity Scout & Founder Discovery Coach.
 Your goal is to highlight unvalidated market problems, operational friction, and unaddressed customer pains without treating assumptions as facts.
 
@@ -238,8 +238,23 @@ A tailored follow-up template for the targets who confirmed pain during your dis
 """
 
 # -------------------------------------------------------------------
-# 3. Dynamic Gemini Generator
+# 3. Dynamic Prompt & Gemini Generator Helpers
 # -------------------------------------------------------------------
+def get_daily_scout_prompt() -> tuple[str, str]:
+    """Returns dynamic instruction and prompt based on weekday vs weekend."""
+    tz = pytz.timezone("Asia/Kolkata")
+    now_ist = datetime.datetime.now(tz)
+    is_weekend = now_ist.weekday() >= 5  # 5 is Saturday, 6 is Sunday
+
+    if is_weekend:
+        category_note = "Focus on digital products, service workflows, or agency/freelance business models."
+    else:
+        category_note = "Focus strictly on Software Applications, Web Apps, or Micro-SaaS products that can be built as a digital MVP using code (APIs, databases, user interfaces)."
+
+    system_instruction = BASE_SYSTEM_PROMPT + f"\n\nTODAY'S FOCUS CATEGORY: {category_note}"
+    prompt = "Scout a fresh, unvalidated market opportunity matching today's focus category."
+    return system_instruction, prompt
+
 def generate_gemini_content(prompt: str, system_instruction: str) -> str:
     last_error = None
     try:
@@ -308,7 +323,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
         f"👋 Evidence-First Opportunity Scout Active!\n\n"
-        f"• Type /pitch to receive today's unvalidated hypothesis.\n"
+        f"• Type /pitch to receive today's unvalidated hypothesis (Mon-Fri: Software Apps | Sat-Sun: Digital Business).\n"
         f"• Chat ID: `{chat_id}`",
         parse_mode="Markdown"
     )
@@ -316,10 +331,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pitch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🔎 Scouting market friction & building hypothesis...")
     try:
+        sys_inst, prompt = get_daily_scout_prompt()
         pitch_text = await asyncio.to_thread(
             generate_gemini_content,
-            prompt="Scout a fresh, unvalidated market opportunity, workflow friction, or customer problem.",
-            system_instruction=SYSTEM_PROMPT
+            prompt=prompt,
+            system_instruction=sys_inst
         )
         context.user_data['last_idea'] = pitch_text
         context.user_data['validation_status'] = "🔴 UNVALIDATED"
@@ -333,10 +349,11 @@ async def scheduled_daily_pitch(context: ContextTypes.DEFAULT_TYPE):
     if not MY_TELEGRAM_CHAT_ID:
         return
     try:
+        sys_inst, prompt = get_daily_scout_prompt()
         pitch_text = await asyncio.to_thread(
             generate_gemini_content,
-            prompt="Scout a fresh, unvalidated market opportunity, workflow friction, or customer problem.",
-            system_instruction=SYSTEM_PROMPT
+            prompt=prompt,
+            system_instruction=sys_inst
         )
         await context.bot.send_message(
             chat_id=MY_TELEGRAM_CHAT_ID,
@@ -478,10 +495,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "btn_next_opp":
         status_msg = await query.message.reply_text("🔄 Scouting next unvalidated opportunity hypothesis...")
         try:
+            sys_inst, prompt = get_daily_scout_prompt()
             pitch_text = await asyncio.to_thread(
                 generate_gemini_content,
-                prompt="Scout a fresh, unvalidated market opportunity, workflow friction, or customer problem.",
-                system_instruction=SYSTEM_PROMPT
+                prompt=prompt,
+                system_instruction=sys_inst
             )
             context.user_data['last_idea'] = pitch_text
             context.user_data['validation_status'] = "🔴 UNVALIDATED"
@@ -537,7 +555,7 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await status_msg.delete()
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            await query.message.reply_text(f"❌ Error: {str(e)}")
 
 # -------------------------------------------------------------------
 # 5. Application Startup & Error Catching
